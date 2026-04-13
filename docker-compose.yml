@@ -1,0 +1,30 @@
+services:
+  # Development: live source mount, build and run inside container
+  dev:
+    image: golang:1.24-bookworm
+    working_dir: /src
+    volumes:
+      - .:/src
+      - go-cache:/root/go/pkg/mod
+      # Mount host config dirs so the TUI can read real Claude Code / Codex assets
+      - ${HOME}/.claude.json:/root/.claude.json:ro
+      - ${HOME}/.claude:/root/.claude:ro
+      - ${HOME}/.codex:/root/.codex:ro
+      - ${HOME}/.agents:/root/.agents:ro
+    stdin_open: true
+    tty: true
+    command: go run ./cmd/agentsbuilder
+
+  # Production: minimal image built from Dockerfile
+  app:
+    build: .
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${HOME}/.claude.json:/root/.claude.json:ro
+      - ${HOME}/.claude:/root/.claude:ro
+      - ${HOME}/.codex:/root/.codex:ro
+      - ${HOME}/.agents:/root/.agents:ro
+
+volumes:
+  go-cache:

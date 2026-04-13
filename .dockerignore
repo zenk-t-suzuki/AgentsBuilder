@@ -1,0 +1,4 @@
+agentsbuilder
+.claude/
+*.md
+docker-compose.yml
