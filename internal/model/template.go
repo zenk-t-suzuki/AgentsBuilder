@@ -6,6 +6,7 @@ type Template struct {
 	Description string
 	Assets      []AssetType
 	Providers   []Provider
+	UserDefined bool // true for templates loaded from ~/.agentsbuilder/templates/
 }
 
 // PredefinedTemplates returns the built-in templates available in MVP.

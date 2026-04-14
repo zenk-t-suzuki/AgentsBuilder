@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"agentsbuilder/internal/config"
+	"agentsbuilder/internal/template"
 	"agentsbuilder/internal/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +17,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Ensure ~/.agentsbuilder/templates/*default/template.json exists on first run.
+	// Errors are non-fatal; built-in predefined templates always work.
+	_ = template.EnsureDefaultTemplate()
 
 	appModel := tui.NewAppModel(cfg.ListProjects())
 	p := tea.NewProgram(appModel, tea.WithAltScreen())

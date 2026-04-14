@@ -26,6 +26,16 @@ func configDir() (string, error) {
 	return filepath.Join(home, ".agentsbuilder"), nil
 }
 
+// TemplatesDir returns the path to the user templates directory (~/.agentsbuilder/templates/).
+// Add a subdirectory with a template.json file to create a custom template.
+func TemplatesDir() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "templates"), nil
+}
+
 // ConfigPath returns the full path to the config file (~/.agentsbuilder/config.json).
 func ConfigPath() (string, error) {
 	dir, err := configDir()

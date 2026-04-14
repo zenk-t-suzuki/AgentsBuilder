@@ -61,7 +61,7 @@ func (a AssetType) String() string {
 	case Skills:
 		return "Skills"
 	case Agents:
-		return "Agents"
+		return "Custom Agents"
 	case MCP:
 		return "MCP"
 	case Plugins:

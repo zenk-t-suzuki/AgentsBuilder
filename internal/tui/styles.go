@@ -56,6 +56,16 @@ var (
 			BorderForeground(PrimaryColor).
 			Padding(0, 2)
 
+	// FocusedTabStyle is used for the active inner Browse tab when the tab bar
+	// itself has keyboard focus (cursor moved up from the top of the list).
+	FocusedTabStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#000000")).
+				Background(PrimaryColor).
+				Border(lipgloss.NormalBorder(), false, false, true, false).
+				BorderForeground(PrimaryColor).
+				Padding(0, 2)
+
 	InactiveTabStyle = lipgloss.NewStyle().
 				Foreground(MutedColor).
 				Border(lipgloss.NormalBorder(), false, false, true, false).

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
+	tmplpkg "agentsbuilder/internal/template"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,11 +23,12 @@ const (
 
 // TemplateUIModel manages the template creation flow.
 type TemplateUIModel struct {
-	Step      TemplateStep
-	Templates []model.Template
-	Cursor    int
-	Width     int
-	Height    int
+	Step          TemplateStep
+	Templates     []model.Template
+	Cursor        int
+	Width         int
+	Height        int
+	TemplatesPath string // path to ~/.agentsbuilder/templates/ for display
 
 	// Configuration step
 	SelectedTemplate *model.Template
@@ -37,12 +40,23 @@ type TemplateUIModel struct {
 }
 
 // NewTemplateUIModel creates a new template UI model.
+// It loads built-in predefined templates first, then appends any user-defined
+// templates discovered in ~/.agentsbuilder/templates/.
 func NewTemplateUIModel() TemplateUIModel {
-	templates := model.PredefinedTemplates()
+	predefined := model.PredefinedTemplates()
+	user := tmplpkg.LoadUserTemplates()
+
+	templates := make([]model.Template, 0, len(predefined)+len(user))
+	templates = append(templates, predefined...)
+	templates = append(templates, user...)
+
+	templatesPath, _ := config.TemplatesDir()
+
 	return TemplateUIModel{
-		Step:      StepSelectTemplate,
-		Templates: templates,
-		keys:      DefaultKeyMap(),
+		Step:          StepSelectTemplate,
+		Templates:     templates,
+		TemplatesPath: templatesPath,
+		keys:          DefaultKeyMap(),
 	}
 }
 
@@ -194,17 +208,29 @@ func (m TemplateUIModel) View() string {
 		b.WriteString(TitleStyle.Render("Select Template"))
 		b.WriteString("\n\n")
 		for i, t := range m.Templates {
+			marker := "  "
+			if t.UserDefined {
+				marker = "★ "
+			}
 			if i == m.Cursor {
-				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s", t.Name)))
+				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s%s", marker, t.Name)))
 			} else {
-				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s", t.Name)))
+				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s%s", marker, t.Name)))
 			}
 			b.WriteString("\n")
-			b.WriteString(DimStyle.Render(fmt.Sprintf("    %s", t.Description)))
-			b.WriteString("\n")
+			if t.Description != "" {
+				b.WriteString(DimStyle.Render(fmt.Sprintf("    %s", t.Description)))
+				b.WriteString("\n")
+			}
 		}
 		b.WriteString("\n")
 		b.WriteString(DimStyle.Render("  enter:select | esc:cancel"))
+		if m.TemplatesPath != "" {
+			b.WriteString("\n\n")
+			b.WriteString(DimStyle.Render(fmt.Sprintf("  ★ user templates: %s", m.TemplatesPath)))
+			b.WriteString("\n")
+			b.WriteString(DimStyle.Render("    Add <name>/template.json to create a custom template."))
+		}
 
 	case StepConfigure:
 		b.WriteString(TitleStyle.Render("Configure Template"))

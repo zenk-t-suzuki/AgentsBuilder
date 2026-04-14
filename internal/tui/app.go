@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"agentsbuilder/internal/model"
 	"agentsbuilder/internal/scanner"
@@ -38,6 +39,7 @@ type AppModel struct {
 
 	// Main panel operation mode
 	ActiveMainMode MainMode
+	AppTabFocused  bool // true when keyboard cursor is in the outer mode tab bar
 	TemplateUI     TemplateUIModel
 
 	// Project picker modal
@@ -73,13 +75,11 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
-		if m.Height > 20 {
+		if m.Height < 20 {
 			m.Height = 20
 		}
 		m.updateLayout()
@@ -113,79 +113,124 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Pane switching is always available, even inside template mode
+		// Tab toggles focus between sidebar and mode tab bar
 		if key.Matches(msg, m.Keys.SwitchPane) {
 			if m.ActivePane == SidebarPane {
-				m.ActivePane = MainPane
+				m.focusModeTabs()
 			} else {
-				m.ActivePane = SidebarPane
+				m.focusSidebar()
 			}
-			m.Sidebar.Focused = m.ActivePane == SidebarPane
-			m.MainArea.Focused = m.ActivePane == MainPane
-			return m, nil
-		}
-		if key.Matches(msg, m.Keys.Left) && m.ActivePane == MainPane {
-			m.ActivePane = SidebarPane
-			m.Sidebar.Focused = true
-			m.MainArea.Focused = false
-			return m, nil
-		}
-		if key.Matches(msg, m.Keys.Right) && m.ActivePane == SidebarPane {
-			m.ActivePane = MainPane
-			m.Sidebar.Focused = false
-			m.MainArea.Focused = true
 			return m, nil
 		}
 
-		// Mode switching (1-4) is always available when main pane is focused
-		if m.ActivePane == MainPane {
-			switch msg.String() {
-			case "1":
-				m.ActiveMainMode = ModeBrowse
-				return m, nil
-			case "2":
-				m.ActiveMainMode = ModeEdit
-				return m, nil
-			case "3":
-				m.ActiveMainMode = ModeCreate
-				return m, nil
-			case "4":
-				m.switchToTemplate()
-				return m, nil
+		// Mode tab bar focused: ←/→ cycle modes, ↓ enters content
+		if m.AppTabFocused {
+			switch {
+			case key.Matches(msg, m.Keys.Left):
+				if m.ActiveMainMode > 0 {
+					m.ActiveMainMode--
+				} else {
+					m.focusSidebar()
+				}
+			case key.Matches(msg, m.Keys.Right):
+				if int(m.ActiveMainMode) < len(allMainModes)-1 {
+					m.ActiveMainMode++
+				}
+			case key.Matches(msg, m.Keys.Down):
+				if m.ActiveMainMode == ModeBrowse {
+					m.focusBrowseTabs()
+				} else {
+					m.focusList()
+				}
 			}
+			return m, nil
 		}
 
-		// Template mode passes remaining keys to its own UI (esc exits, up/down/enter navigate)
+		// Inner Browse tab bar focused: ↑ lifts to mode tabs, ←/→ switch tabs
+		if m.ActiveMainMode == ModeBrowse && m.MainArea.TabFocused {
+			switch {
+			case key.Matches(msg, m.Keys.Up):
+				m.focusModeTabs()
+			case key.Matches(msg, m.Keys.Left):
+				if m.MainArea.ActiveBrowseTab > 0 {
+					var cmd tea.Cmd
+					m.MainArea, cmd = m.MainArea.SwitchBrowseTab(-1)
+					return m, cmd
+				}
+				m.focusSidebar()
+			case key.Matches(msg, m.Keys.Right):
+				var cmd tea.Cmd
+				m.MainArea, cmd = m.MainArea.SwitchBrowseTab(1)
+				return m, cmd
+			}
+			return m, nil
+		}
+
+		// Sidebar pane: Right → mode tab bar, otherwise delegate to Sidebar
+		if m.ActivePane == SidebarPane {
+			if key.Matches(msg, m.Keys.Right) {
+				m.focusModeTabs()
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.Sidebar, cmd = m.Sidebar.Update(msg)
+			return m, cmd
+		}
+
+		// Main pane (list/content area): Left → sidebar
+		if key.Matches(msg, m.Keys.Left) {
+			m.focusSidebar()
+			return m, nil
+		}
+
+		// Mode switching (1-3) is always available in main pane
+		switch msg.String() {
+		case "1":
+			m.ActiveMainMode = ModeBrowse
+			return m, nil
+		case "2":
+			m.switchToTemplate()
+			return m, nil
+		case "3":
+			m.ActiveMainMode = ModeMarketplace
+			return m, nil
+		}
+
+		// Template mode: ↑ at the top of the selector lifts to mode tab bar
 		if m.ActiveMainMode == ModeTemplate {
+			if key.Matches(msg, m.Keys.Up) && m.TemplateUI.Step == StepSelectTemplate && m.TemplateUI.Cursor == 0 {
+				m.focusModeTabs()
+				return m, nil
+			}
 			var cmd tea.Cmd
 			m.TemplateUI, cmd = m.TemplateUI.Update(msg)
 			return m, cmd
 		}
 
-		// `t` shortcut: jump to template mode from main pane
-		if key.Matches(msg, m.Keys.Template) && m.ActivePane == MainPane {
-			m.switchToTemplate()
+		// Marketplace mode: ↑ lifts to mode tab bar
+		if m.ActiveMainMode == ModeMarketplace {
+			if key.Matches(msg, m.Keys.Up) {
+				m.focusModeTabs()
+			}
 			return m, nil
 		}
 
-		if m.ActivePane == SidebarPane {
-			var cmd tea.Cmd
-			m.Sidebar, cmd = m.Sidebar.Update(msg)
-			cmds = append(cmds, cmd)
-		} else {
-			// Detail panel scroll (available whenever main pane is focused).
-			if key.Matches(msg, m.Keys.DetailScrollDown) {
-				m.DetailPanel.ScrollDown(1)
-				return m, nil
-			}
-			if key.Matches(msg, m.Keys.DetailScrollUp) {
-				m.DetailPanel.ScrollUp(1)
-				return m, nil
-			}
-			var cmd tea.Cmd
-			m.MainArea, cmd = m.MainArea.Update(msg)
-			cmds = append(cmds, cmd)
+		// Browse mode: `t` shortcut, detail scroll, pass rest to MainArea
+		if key.Matches(msg, m.Keys.Template) {
+			m.switchToTemplate()
+			return m, nil
 		}
+		if key.Matches(msg, m.Keys.DetailScrollDown) {
+			m.DetailPanel.ScrollDown(1)
+			return m, nil
+		}
+		if key.Matches(msg, m.Keys.DetailScrollUp) {
+			m.DetailPanel.ScrollUp(1)
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.MainArea, cmd = m.MainArea.Update(msg)
+		return m, cmd
 
 	case ConfirmDeleteProjectMsg:
 		m.DeleteConfirmMode = true
@@ -316,7 +361,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m AppModel) View() string {
@@ -350,10 +395,13 @@ func (m AppModel) View() string {
 	mainWidth := m.mainAreaWidth()
 	contentHeight := m.Height - 2
 
-	sidebarContent := m.Sidebar.View()
+	// Explicitly pad sidebar content to the inner height so its border always
+	// aligns with the main panel's border, regardless of content length.
+	innerH := contentHeight - 2
+	sidebarContent := padToHeight(m.Sidebar.View(), innerH)
 	sidebarBox := m.sidebarBorder().
 		Width(sidebarWidth - 2).
-		Height(contentHeight - 2).
+		Height(innerH).
 		Render(sidebarContent)
 
 	var mainContent string
@@ -368,17 +416,19 @@ func (m AppModel) View() string {
 			Width(m.MainArea.Width).
 			Height(contentHeight - 2). // full main-box inner height
 			Render(tabBar + "\n" + m.MainArea.View())
-		detailBox := InactiveBorderStyle.
+		detailBox := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(MutedColor).
+			Margin(0, 0, 0, 1).
+			Padding(0, 0, 0, 1).
 			Width(m.DetailPanel.Width).
 			Height(m.DetailPanel.Height).
 			Render(m.DetailPanel.View())
 		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, listSection, detailBox)
 	case ModeTemplate:
 		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.TemplateUI.View()
-	case ModeEdit:
-		mainContent = m.renderModeTabs(mainInnerW) + "\n" + DimStyle.Render("\n  Select an asset in Browse mode, then press enter to edit.")
-	case ModeCreate:
-		mainContent = m.renderModeTabs(mainInnerW) + "\n" + DimStyle.Render("\n  Create mode: choose an asset type and provider to scaffold.")
+	case ModeMarketplace:
+		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.renderMarketplace()
 	}
 
 	mainBox := m.mainBorder().
@@ -444,7 +494,7 @@ func (m *AppModel) updateLayout() {
 	// Horizontal split: list (55%) on the left, detail (45%) on the right.
 	// Inner main-box content width = mainAreaWidth() - 2 (border = 1 each side).
 	totalW := m.mainAreaWidth() - 2
-	listW := totalW * 55 / 100
+	listW := totalW * 70 / 100
 	if listW < 20 {
 		listW = 20
 	}
@@ -453,22 +503,40 @@ func (m *AppModel) updateLayout() {
 		detailBoxW = 15
 	}
 
-	// Detail inner height: the detail box spans the full main-box inner height
-	// (Height - 4), minus 2 for its own border.
-	detailH := m.Height - 6
-	if detailH < 3 {
-		detailH = 3
-	}
-
 	m.Sidebar.Width = m.sidebarWidth() - 4
 	m.Sidebar.Height = m.Height - 4 // inner height of sidebar box
 	m.MainArea.Width = listW
 	m.MainArea.Height = contentH
-	m.DetailPanel.Width = detailBoxW - 2 // inner width (subtract border)
-	m.DetailPanel.Height = detailH       // inner height (subtract border)
+	m.DetailPanel.Width = detailBoxW - 3 // inner width (left margin:1 + left border:1 + left padding:1)
+	detailH := m.Height - 4              // no top/bottom border
+	if detailH < 3 {
+		detailH = 3
+	}
+	m.DetailPanel.Height = detailH
 	m.TemplateUI.Width = m.mainAreaWidth() - 4
 	m.TemplateUI.Height = m.Height - 4
 	m.pickerDimensions()
+}
+
+// renderMarketplace renders the Marketplace mode panel.
+// skillsmp.com has no public API (all endpoints return 403), so we display
+// the URL for the user to visit in a browser.
+func (m AppModel) renderMarketplace() string {
+	var b strings.Builder
+	b.WriteString(TitleStyle.Render("Marketplace"))
+	b.WriteString("\n\n")
+	b.WriteString(NormalStyle.Render("  Skills Marketplace — skillsmp.com"))
+	b.WriteString("\n\n")
+	b.WriteString(DimStyle.Render("  No public API is available for in-TUI browsing."))
+	b.WriteString("\n")
+	b.WriteString(DimStyle.Render("  Visit the site directly in your browser:"))
+	b.WriteString("\n\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(PrimaryColor).Bold(true).Render("  https://skillsmp.com/"))
+	b.WriteString("\n\n")
+	b.WriteString(DimStyle.Render("  Browse and discover community-contributed skills and agents for"))
+	b.WriteString("\n")
+	b.WriteString(DimStyle.Render("  Claude Code and Codex at the URL above."))
+	return b.String()
 }
 
 // switchToTemplate initialises and activates the template mode.
@@ -479,6 +547,42 @@ func (m *AppModel) switchToTemplate() {
 	m.TemplateUI.Height = m.mainAreaHeight()
 }
 
+// focusSidebar moves keyboard focus to the Scopes sidebar.
+func (m *AppModel) focusSidebar() {
+	m.AppTabFocused = false
+	m.MainArea.TabFocused = false
+	m.ActivePane = SidebarPane
+	m.Sidebar.Focused = true
+	m.MainArea.Focused = false
+}
+
+// focusModeTabs moves keyboard focus to the outer mode tab bar.
+func (m *AppModel) focusModeTabs() {
+	m.AppTabFocused = true
+	m.MainArea.TabFocused = false
+	m.ActivePane = MainPane
+	m.Sidebar.Focused = false
+	m.MainArea.Focused = false
+}
+
+// focusBrowseTabs moves keyboard focus to the inner Browse tab bar.
+func (m *AppModel) focusBrowseTabs() {
+	m.AppTabFocused = false
+	m.MainArea.TabFocused = true
+	m.ActivePane = MainPane
+	m.Sidebar.Focused = false
+	m.MainArea.Focused = true
+}
+
+// focusList moves keyboard focus to the main content list.
+func (m *AppModel) focusList() {
+	m.AppTabFocused = false
+	m.MainArea.TabFocused = false
+	m.ActivePane = MainPane
+	m.Sidebar.Focused = false
+	m.MainArea.Focused = true
+}
+
 // renderModeTabs renders the horizontal tab bar.
 // fillWidth extends the bottom separator line to the given width so it aligns
 // with right-aligned content below. Pass 0 to skip the filler.
@@ -487,7 +591,11 @@ func (m AppModel) renderModeTabs(fillWidth int) string {
 	for i, mode := range allMainModes {
 		label := fmt.Sprintf("[%d] %s", i+1, mode.Label())
 		if mode == m.ActiveMainMode {
-			rendered[i] = ActiveTabStyle.Render(label)
+			if m.AppTabFocused {
+				rendered[i] = FocusedTabStyle.Render(label)
+			} else {
+				rendered[i] = ActiveTabStyle.Render(label)
+			}
 		} else {
 			rendered[i] = InactiveTabStyle.Render(label)
 		}
@@ -517,4 +625,14 @@ func (m AppModel) findDiff(assetType model.AssetType, provider model.Provider) *
 		}
 	}
 	return nil
+}
+
+// padToHeight ensures content is exactly h lines tall by appending empty lines.
+// This guarantees the sidebar border matches the main panel border height.
+func padToHeight(content string, h int) string {
+	lines := strings.Split(content, "\n")
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines[:h], "\n")
 }

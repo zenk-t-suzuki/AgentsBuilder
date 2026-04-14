@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Communication Language
+
+Always respond in **Japanese** regardless of the language used in the question.
+
 ## Project Overview
 
 A TUI-based agent configuration management tool for **Claude Code** and **Codex**. Built with **Go + Bubble Tea**. No LLM is embedded — this tool only browses, diffs, and manages configuration assets via a terminal UI. Target platform: **Linux only** (MVP).

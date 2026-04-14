@@ -18,6 +18,8 @@ type KeyMap struct {
 	ToggleCheck      key.Binding
 	DetailScrollUp   key.Binding // scroll detail panel up
 	DetailScrollDown key.Binding // scroll detail panel down
+	BrowseTabLeft    key.Binding // prev inner Browse tab
+	BrowseTabRight   key.Binding // next inner Browse tab
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -79,10 +81,18 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("]"),
 			key.WithHelp("]", "scroll detail down"),
 		),
+		BrowseTabLeft: key.NewBinding(
+			key.WithKeys(","),
+			key.WithHelp(",", "prev tab"),
+		),
+		BrowseTabRight: key.NewBinding(
+			key.WithKeys("."),
+			key.WithHelp(".", "next tab"),
+		),
 	}
 }
 
 // HelpText returns a short help string.
 func HelpText() string {
-	return "←/→:switch pane | ↑/↓:navigate | [/]:scroll detail | 1-4:mode | a:add | d:del | q:quit"
+	return "←/→:switch pane | ↑/↓:navigate | ,/.:browse tab | [/]:scroll detail | 1-3:mode | a:add | d:del | q:quit"
 }
