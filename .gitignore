@@ -1,6 +1,9 @@
 # Build output
 /agentsbuilder
 
+# Claude Code local settings (machine-specific, not for version control)
+.claude/settings.local.json
+
 # Temporary files
 .temp/
 

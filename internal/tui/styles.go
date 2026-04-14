@@ -95,4 +95,13 @@ var (
 	// Checkbox
 	CheckedStyle   = lipgloss.NewStyle().Foreground(SecondaryColor).Render("[x]")
 	UncheckedStyle = lipgloss.NewStyle().Foreground(MutedColor).Render("[ ]")
+
+	// TemplateCreateBannerStyle is a high-visibility indicator shown in the help
+	// bar while the user is building a new template.  Bright red background so it
+	// stands out against every theme.
+	TemplateCreateBannerStyle = lipgloss.NewStyle().
+					Bold(true).
+					Foreground(lipgloss.Color("#FFFFFF")).
+					Background(lipgloss.Color("#C92A2A")).
+					Padding(0, 1)
 )

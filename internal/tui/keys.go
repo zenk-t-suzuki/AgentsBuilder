@@ -10,6 +10,10 @@ type KeyMap struct {
 	Down             key.Binding
 	Left             key.Binding
 	Right            key.Binding
+	CtrlUp           key.Binding // jump to upper element (skip local action)
+	CtrlDown         key.Binding // jump to lower element (skip local action)
+	CtrlLeft         key.Binding // jump to left element (skip local action)
+	CtrlRight        key.Binding // jump to right element (skip local action)
 	Select           key.Binding
 	Back             key.Binding
 	AddProject       key.Binding
@@ -20,6 +24,7 @@ type KeyMap struct {
 	DetailScrollDown key.Binding // scroll detail panel down
 	BrowseTabLeft    key.Binding // prev inner Browse tab
 	BrowseTabRight   key.Binding // next inner Browse tab
+	CreateTemplate   key.Binding // start template creation wizard
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -48,6 +53,22 @@ func DefaultKeyMap() KeyMap {
 		Right: key.NewBinding(
 			key.WithKeys("l", "right"),
 			key.WithHelp("→/l", "focus main"),
+		),
+		CtrlUp: key.NewBinding(
+			key.WithKeys("ctrl+up"),
+			key.WithHelp("Ctrl+↑", "jump up"),
+		),
+		CtrlDown: key.NewBinding(
+			key.WithKeys("ctrl+down"),
+			key.WithHelp("Ctrl+↓", "jump down"),
+		),
+		CtrlLeft: key.NewBinding(
+			key.WithKeys("ctrl+left"),
+			key.WithHelp("Ctrl+←", "jump left"),
+		),
+		CtrlRight: key.NewBinding(
+			key.WithKeys("ctrl+right"),
+			key.WithHelp("Ctrl+→", "jump right"),
 		),
 		Select: key.NewBinding(
 			key.WithKeys("enter"),
@@ -89,10 +110,14 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("."),
 			key.WithHelp(".", "next tab"),
 		),
+		CreateTemplate: key.NewBinding(
+			key.WithKeys("n"),
+			key.WithHelp("n", "new template"),
+		),
 	}
 }
 
 // HelpText returns a short help string.
 func HelpText() string {
-	return "←/→:switch pane | ↑/↓:navigate | ,/.:browse tab | [/]:scroll detail | 1-3:mode | a:add | d:del | q:quit"
+	return "←/→:pane | ↑/↓:nav | Ctrl+←/→/↑/↓:jump | ,/.:tab | [/]:detail | 1-3:mode | n:tmpl | a:add | d:del | q:quit"
 }

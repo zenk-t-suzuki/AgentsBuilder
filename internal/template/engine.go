@@ -8,6 +8,32 @@ import (
 	"agentsbuilder/internal/model"
 )
 
+// copyTemplateFiles copies every file from srcDir into dstDir, preserving the
+// relative directory structure.  Missing srcDir is silently ignored.
+func copyTemplateFiles(srcDir, dstDir string) error {
+	info, err := os.Stat(srcDir)
+	if err != nil || !info.IsDir() {
+		return nil // no files bundled — not an error
+	}
+	return filepath.Walk(srcDir, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if fi.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstDir, rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return copyFile(path, dst)
+	})
+}
+
 // dirMappings maps asset types to their directory paths for each provider.
 // These mirror the scanner's assetLocation definitions.
 var dirMappings = map[model.Provider]map[model.AssetType]string{
@@ -79,6 +105,13 @@ func ApplyTemplate(tmpl model.Template, targetPath string, scope model.Scope) er
 				return fmt.Errorf("creating directory %s: %w", fullPath, err)
 			}
 		}
+	}
+
+	// If this template was created via the in-app wizard it bundles actual files.
+	// Copy them into the target directory tree (non-fatal on error).
+	if tmpl.TemplateDir != "" {
+		filesDir := filepath.Join(tmpl.TemplateDir, "files")
+		_ = copyTemplateFiles(filesDir, targetPath)
 	}
 
 	return nil

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
@@ -14,6 +16,11 @@ import (
 // DefaultTemplateDirName is the name of the built-in default user template.
 // The leading '*' causes it to sort first alphabetically in the directory listing.
 const DefaultTemplateDirName = "*default"
+
+// templateFileItem describes one file bundled inside a user-created template.
+type templateFileItem struct {
+	RelPath string `json:"relPath"` // path relative to the template's files/ directory
+}
 
 // templateFile is the on-disk JSON representation of a user-defined template.
 // Create ~/.agentsbuilder/templates/<name>/template.json to add a custom template.
@@ -29,11 +36,26 @@ const DefaultTemplateDirName = "*default"
 //
 // Valid asset values:  Skills, Agents, MCP, Plugins, Hooks, AgentsMD, ClaudeMD
 // Valid provider values: ClaudeCode, Codex
+//
+// Templates created via the in-app wizard may also include a "items" array and
+// a corresponding files/ sub-directory containing the actual files to copy.
 type templateFile struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Assets      []string `json:"assets"`
-	Providers   []string `json:"providers"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	Assets      []string           `json:"assets"`
+	Providers   []string           `json:"providers"`
+	Items       []templateFileItem `json:"items,omitempty"`
+}
+
+// FileRef holds the data needed to bundle one file into a user template.
+// It is accepted by SaveUserTemplate and mirrors tui.TmplItem without
+// creating a cross-package import cycle.
+type FileRef struct {
+	SrcPath    string          // absolute source file path
+	DestRelDir string          // relative destination dir for project scope
+	Filename   string          // filename at destination
+	AssetType  model.AssetType
+	Provider   model.Provider
 }
 
 // EnsureDefaultTemplate creates ~/.agentsbuilder/templates/*default/template.json
@@ -85,7 +107,8 @@ func LoadUserTemplates() []model.Template {
 		if !entry.IsDir() {
 			continue
 		}
-		tmplPath := filepath.Join(dir, entry.Name(), "template.json")
+		tmplDir := filepath.Join(dir, entry.Name())
+		tmplPath := filepath.Join(tmplDir, "template.json")
 		data, err := os.ReadFile(tmplPath)
 		if err != nil {
 			continue
@@ -99,9 +122,85 @@ func LoadUserTemplates() []model.Template {
 			continue
 		}
 		tmpl.UserDefined = true
+		tmpl.TemplateDir = tmplDir
 		templates = append(templates, tmpl)
 	}
 	return templates
+}
+
+// SaveUserTemplate creates a new user template from the given file refs.
+// It writes a template.json manifest and copies all referenced source files
+// into a files/ sub-directory within the template directory.
+func SaveUserTemplate(name string, refs []FileRef) error {
+	if name == "" {
+		return errors.New("template name cannot be empty")
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return errors.New("template name must not contain path separators")
+	}
+	if len(refs) == 0 {
+		return errors.New("at least one file must be selected")
+	}
+
+	dir, err := config.TemplatesDir()
+	if err != nil {
+		return err
+	}
+	tmplDir := filepath.Join(dir, name)
+	if err := os.MkdirAll(tmplDir, 0o755); err != nil {
+		return fmt.Errorf("creating template directory: %w", err)
+	}
+
+	// Derive asset types and providers from refs (for the legacy assets/providers fields).
+	assetSet := make(map[string]bool)
+	providerSet := make(map[string]bool)
+	for _, r := range refs {
+		assetSet[r.AssetType.String()] = true
+		providerSet[r.Provider.String()] = true
+	}
+	var assets, providers []string
+	for _, at := range model.AssetTypes() {
+		if assetSet[at.String()] {
+			assets = append(assets, at.String())
+		}
+	}
+	for _, p := range model.Providers() {
+		if providerSet[p.String()] {
+			providers = append(providers, p.String())
+		}
+	}
+
+	// Copy each file into the template's files/ directory.
+	var items []templateFileItem
+	for _, r := range refs {
+		var relPath string
+		if r.DestRelDir != "" {
+			relPath = filepath.Join(r.DestRelDir, r.Filename)
+		} else {
+			relPath = r.Filename
+		}
+		destPath := filepath.Join(tmplDir, "files", relPath)
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return fmt.Errorf("creating files directory: %w", err)
+		}
+		if err := copyFile(r.SrcPath, destPath); err != nil {
+			return fmt.Errorf("copying %s: %w", r.Filename, err)
+		}
+		items = append(items, templateFileItem{RelPath: relPath})
+	}
+
+	f := templateFile{
+		Name:        name,
+		Description: fmt.Sprintf("Created from %d selected item(s)", len(refs)),
+		Assets:      assets,
+		Providers:   providers,
+		Items:       items,
+	}
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(tmplDir, "template.json"), data, 0o644)
 }
 
 // fileToTemplate converts the on-disk templateFile to a model.Template.
@@ -143,11 +242,17 @@ func fileToTemplate(f templateFile) (model.Template, error) {
 		providers = append(providers, pv)
 	}
 
-	if len(assets) == 0 {
-		return model.Template{}, errors.New("no assets defined")
-	}
-	if len(providers) == 0 {
-		return model.Template{}, errors.New("no providers defined")
+	// File-based templates (created via the wizard) may have empty assets/providers
+	// when all content is expressed through the items array. Only enforce the
+	// requirements for manifest-only templates.
+	hasFiles := len(f.Items) > 0
+	if !hasFiles {
+		if len(assets) == 0 {
+			return model.Template{}, errors.New("no assets defined")
+		}
+		if len(providers) == 0 {
+			return model.Template{}, errors.New("no providers defined")
+		}
 	}
 
 	return model.Template{
@@ -156,4 +261,22 @@ func fileToTemplate(f templateFile) (model.Template, error) {
 		Assets:      assets,
 		Providers:   providers,
 	}, nil
+}
+
+// copyFile copies src to dst, creating dst if necessary.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
