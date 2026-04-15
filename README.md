@@ -45,6 +45,13 @@ go build -o agentsbuilder ./cmd/agentsbuilder
 sudo mv agentsbuilder /usr/local/bin/
 ```
 
+> **注意**: `go build` で直接ビルドした場合はバージョン情報が埋め込まれないため、起動時の自動アップデートチェックはスキップされます。
+> リリースビルドは以下のように `-ldflags` でバージョンを指定してください。
+>
+> ```bash
+> go build -ldflags="-X main.Version=v1.0.0" -o agentsbuilder ./cmd/agentsbuilder
+> ```
+
 Go 1.24 以上が必要です。
 
 ### Docker（開発用）
