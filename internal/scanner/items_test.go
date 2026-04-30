@@ -39,13 +39,15 @@ func TestParseFrontmatter(t *testing.T) {
 	}
 }
 
-func TestScanAgentItems_ClaudeCode(t *testing.T) {
+func TestScanAgentItems(t *testing.T) {
+	// scanAgentItems is now Claude Code-only — Codex has no separate
+	// agents/ directory.
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "helper.md"), []byte("---\nname: my-helper\ndescription: A helpful agent\n---\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "plain.md"), []byte("no frontmatter"), 0o644)
 	os.WriteFile(filepath.Join(dir, "skip.toml"), []byte("name = \"ignored\""), 0o644) // not .md
 
-	items := scanAgentItems(dir, 0) // 0 = ClaudeCode
+	items := scanAgentItems(dir)
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
@@ -59,6 +61,26 @@ func TestScanAgentItems_ClaudeCode(t *testing.T) {
 	}
 	if _, ok := found["plain"]; !ok {
 		t.Error("expected 'plain' (fallback to filename)")
+	}
+}
+
+func TestScanEmbeddedTOML_CodexHooks(t *testing.T) {
+	// Codex stores hooks under [hooks.<name>] in ~/.codex/config.toml.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+	content := "[hooks.linter]\nevent = \"after_tool_use\"\ncommand = \"./run.sh\"\n[hooks.notify]\nevent = \"after_agent\"\n"
+	os.WriteFile(configPath, []byte(content), 0o644)
+
+	items := scanEmbeddedTOML(configPath, "hooks")
+	if len(items) != 2 {
+		t.Fatalf("expected 2 hooks, got %d", len(items))
+	}
+	names := map[string]bool{}
+	for _, it := range items {
+		names[it.Name] = true
+	}
+	if !names["linter"] || !names["notify"] {
+		t.Errorf("expected linter and notify, got %v", names)
 	}
 }
 

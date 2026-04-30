@@ -51,13 +51,16 @@ func TestScanProject_ClaudeCode(t *testing.T) {
 func TestScanProject_Codex(t *testing.T) {
 	dir := t.TempDir()
 
-	os.MkdirAll(filepath.Join(dir, ".codex", "agents"), 0o755)
+	// Codex skills live at .agents/skills/ (not .codex/skills/) per
+	// codex-rs/core-skills/src/loader.rs.
+	os.MkdirAll(filepath.Join(dir, ".agents", "skills"), 0o755)
 	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Agents"), 0o644)
 
-	// Codex has 4 asset types (no ClaudeMD equivalent)
+	// Codex / Project supports only Skills + AgentsMD — config.toml
+	// (MCP/Hooks/Plugins) is global-only and there is no agents/ dir.
 	assets := ScanProject(model.Codex, dir)
-	if len(assets) != 4 {
-		t.Fatalf("expected 4 assets, got %d", len(assets))
+	if len(assets) != 2 {
+		t.Fatalf("expected 2 assets (Skills, AgentsMD), got %d", len(assets))
 	}
 
 	found := map[model.AssetType]bool{}
@@ -65,19 +68,18 @@ func TestScanProject_Codex(t *testing.T) {
 		found[a.Type] = a.Exists
 	}
 
-	if !found[model.Agents] {
-		t.Error("Agents should exist")
+	if !found[model.Skills] {
+		t.Error("Skills should exist (.agents/skills was created)")
 	}
 	if !found[model.AgentsMD] {
 		t.Error("AGENTS.md should exist")
 	}
-	// Skills are at .agents/skills/ — not created in this test
-	if found[model.Skills] {
-		t.Error("Skills should not exist (.agents/skills not created)")
-	}
-	// Codex has no CLAUDE.md
+	// Codex has no CLAUDE.md and no separate Agents asset.
 	if found[model.ClaudeMD] {
 		t.Error("ClaudeMD should not be tracked for Codex")
+	}
+	if found[model.Agents] {
+		t.Error("Agents should not be tracked for Codex")
 	}
 }
 

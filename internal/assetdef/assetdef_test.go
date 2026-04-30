@@ -18,13 +18,23 @@ func TestLookup(t *testing.T) {
 		{model.ClaudeCode, model.Global, model.Skills, true, ".claude/commands", DirListing},
 		{model.ClaudeCode, model.Global, model.MCP, true, ".claude.json", EmbeddedJSON},
 		{model.ClaudeCode, model.Project, model.MCP, true, ".mcp.json", EmbeddedJSON},
-		{model.Codex, model.Global, model.Skills, true, ".codex/skills", DirListing},
+		// Codex skills live at .agents/skills (not .codex/skills) per
+		// codex-rs/core-skills/src/loader.rs.
+		{model.Codex, model.Global, model.Skills, true, ".agents/skills", DirListing},
+		{model.Codex, model.Project, model.Skills, true, ".agents/skills", DirListing},
 		{model.Codex, model.Global, model.MCP, true, ".codex/config.toml", EmbeddedTOML},
+		{model.Codex, model.Global, model.Hooks, true, ".codex/config.toml", EmbeddedTOML},
+		{model.Codex, model.Global, model.Plugins, true, ".codex/config.toml", EmbeddedTOML},
 		{model.ClaudeCode, model.Project, model.ClaudeMD, true, "CLAUDE.md", SingleFile},
 		// Codex has no ClaudeMD
 		{model.Codex, model.Project, model.ClaudeMD, false, "", 0},
-		// Codex project has no Plugins
+		// Codex's config.toml is global only — project has no MCP/Hooks/Plugins.
+		{model.Codex, model.Project, model.MCP, false, "", 0},
+		{model.Codex, model.Project, model.Hooks, false, "", 0},
 		{model.Codex, model.Project, model.Plugins, false, "", 0},
+		// Codex has no separate agents/ directory.
+		{model.Codex, model.Global, model.Agents, false, "", 0},
+		{model.Codex, model.Project, model.Agents, false, "", 0},
 	}
 	for _, tt := range tests {
 		def, ok := Lookup(tt.provider, tt.scope, tt.asset)
@@ -56,8 +66,13 @@ func TestForProviderScope(t *testing.T) {
 	}
 
 	defs = ForProviderScope(model.Codex, model.Project)
-	if len(defs) != 4 {
-		t.Fatalf("Codex Project: got %d defs, want 4", len(defs))
+	if len(defs) != 2 {
+		t.Fatalf("Codex Project: got %d defs, want 2 (Skills, AgentsMD)", len(defs))
+	}
+
+	defs = ForProviderScope(model.Codex, model.Global)
+	if len(defs) != 5 {
+		t.Fatalf("Codex Global: got %d defs, want 5 (Skills, MCP, Hooks, Plugins, AgentsMD)", len(defs))
 	}
 }
 
@@ -127,10 +142,11 @@ func TestDestDir(t *testing.T) {
 		want     string
 	}{
 		{model.ClaudeCode, model.Skills, ".claude/commands"},
-		{model.ClaudeCode, model.MCP, ""},       // .mcp.json → parent is "." → ""
+		{model.ClaudeCode, model.MCP, ""},          // .mcp.json → parent is "." → ""
 		{model.ClaudeCode, model.Agents, ".claude/agents"},
-		{model.Codex, model.Skills, ".codex/skills"},
-		{model.Codex, model.ClaudeMD, ""},        // not found → ""
+		{model.Codex, model.Skills, ".agents/skills"},
+		{model.Codex, model.ClaudeMD, ""},          // not found → ""
+		{model.Codex, model.Agents, ""},            // not modeled → ""
 	}
 	for _, tt := range tests {
 		got := DestDir(tt.provider, tt.asset)

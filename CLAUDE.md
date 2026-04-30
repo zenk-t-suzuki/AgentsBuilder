@@ -61,25 +61,46 @@ Two scopes: **Global** and **Project**. Projects are registered explicitly insid
 
 1. **Browse**: View all managed assets for the selected Global or Project scope.
 2. **Diff/Priority visualization**: When the same asset type exists in both Global and Project scopes, show which takes precedence and display file-level diffs.
-3. **Template**: Apply built-in directory scaffolds (predefined only — user-defined templates have been replaced by marketplace plugins) to bootstrap a Global or Project scope.
-4. **Marketplace**: Register Claude Code-compatible plugin marketplaces (`.claude-plugin/marketplace.json`) and install plugins into Claude Code and/or Codex with a checkbox target picker. Source forms accepted: `owner/repo`, full Git URL with optional `#ref`, local directory or `marketplace.json`, and remote `marketplace.json` URL — matching `/plugin marketplace add`.
+3. **Template**: Apply built-in directory scaffolds (predefined only) to bootstrap a Global or Project scope.
+4. **Marketplace**: Register plugin marketplaces and install plugins into Claude Code and/or Codex with a checkbox target picker. Source forms accepted: `owner/repo`, full Git URL with optional `#ref`, local directory or `marketplace.json`, and remote `marketplace.json` URL — matching `/plugin marketplace add` (Claude Code) and `.agents/plugins/marketplace.json` (Codex).
 5. **Project management**: Add/remove projects from within the TUI.
+
+### Provider asset paths
+
+Paths are derived from the actual provider sources, not inferred:
+
+| Asset | Claude Code | Codex |
+|---|---|---|
+| Skills (Global) | `~/.claude/commands/`, `~/.claude/skills/` | `~/.agents/skills/` |
+| Skills (Project) | `<root>/.claude/commands/` | `<root>/.agents/skills/` (ancestor walk) |
+| Agents | `.claude/agents/<name>.md` | n/a — Codex has no agents/ directory |
+| MCP | `~/.claude.json` / `<root>/.mcp.json` (`mcpServers`) | `~/.codex/config.toml` `[mcp_servers.<name>]` |
+| Hooks | `~/.claude/settings.json` (`hooks`) | `~/.codex/config.toml` `[hooks.<name>]` |
+| Plugins | `.claude/settings.json` (`enabledPlugins`) | `~/.codex/config.toml` `[plugins.<name>]` |
+| AGENTS.md | `~/.claude/AGENTS.md`, `<root>/AGENTS.md` | `~/.codex/AGENTS.override.md` > `~/.codex/AGENTS.md`, `<root>/AGENTS.override.md` > `<root>/AGENTS.md` |
+
+Codex's `~/.codex/config.toml` is global only — there is no project-level config.toml.
 
 ### Marketplace details
 
-- Cache: `~/.agentsbuilder/cache/marketplaces/<source-key>/`. AgentsBuilder never writes to `~/.claude/`.
-- Install copies plugin components into the chosen targets:
-  - `skills/<name>/` → `.claude/skills/<name>/` or `.codex/skills/<name>/`
+- **Manifest formats supported** (auto-detected by content):
+  - Claude Code: `<root>/.claude-plugin/marketplace.json` (requires `owner.name`)
+  - Codex: `<root>/.agents/plugins/marketplace.json` (requires per-plugin `policy`)
+- **Plugin manifest paths** (auto-detected): `<plugin>/.claude-plugin/plugin.json` (Claude) or `<plugin>/plugin.json` (Codex). Codex's plugin.json `skills` / `mcpServers` / `hooks` path fields are honoured when present.
+- **Cache**: `~/.agentsbuilder/cache/marketplaces/<source-key>/`. AgentsBuilder never writes to `~/.claude/` or `~/.codex/plugins/cache/`.
+- **Install mapping**:
+  - `skills/<name>/` → `.claude/skills/<name>/` (Claude) or `.agents/skills/<name>/` (Codex)
   - `commands/*.md` → `.claude/commands/` (Claude Code only)
-  - `agents/*.md` → `.claude/agents/` or `.codex/agents/`
-  - `hooks/*.json` → merged into `.claude/settings.json` (Codex skipped)
-  - `mcp/*.json` → merged into `.mcp.json` (Claude) or converted to TOML and merged into `.codex/config.toml`
-- Plugin sources supported during marketplace load: relative paths (`./plugins/foo`), `github`, `url`, and `git-subdir`. `npm` is not yet supported.
+  - `agents/*.md` → `.claude/agents/` (Claude Code only)
+  - `hooks/*.json` → format auto-detected. Claude-format snippets (`PreToolUse`/`PostToolUse`/etc.) merge into `.claude/settings.json`; Codex-format snippets (events `after_agent`/`after_tool_use`) merge into `~/.codex/config.toml` `[hooks.<name>]`. Mismatched formats are skipped per-target.
+  - `mcp/*.json` → merged into `.mcp.json` (Claude) or converted to TOML and merged into `~/.codex/config.toml` `[mcp_servers.<name>]`. HTTP-transport entries are passed through verbatim — Claude's `bearer_token` / `headers` are written as-is; Codex expects `bearer_token_env_var` / `http_headers` and may not accept untranslated entries.
+- **Plugin sources supported**: relative paths (`./plugins/foo`), `github`, `url`, `git-subdir`, plus Codex's tagless `{path}` / `{url}` / `{url, path}` shapes. `npm` is not yet supported.
 
 ### Out of Scope (MVP)
 
 - In-TUI editing
 - Non-interactive commands (`scan`, `validate`, etc.)
-- Writing to `~/.claude/settings.json extraKnownMarketplaces` (read-only friendliness preserved)
+- Writing to `~/.claude/settings.json` `extraKnownMarketplaces` or `~/.codex/config.toml` `[marketplaces]`
+- Translating MCP HTTP-transport field names between Claude and Codex
 - npm-based plugin sources
 - Windows/macOS support

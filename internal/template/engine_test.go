@@ -107,8 +107,10 @@ func TestApplyTemplate_GlobalScope(t *testing.T) {
 		t.Fatalf("ApplyTemplate: %v", err)
 	}
 
+	// Codex Skills live under .agents/skills (not .codex/skills) per
+	// codex-rs/core-skills/src/loader.rs. MCP is global config.toml.
 	expectDirs := []string{
-		filepath.Join(dir, ".codex", "skills"),
+		filepath.Join(dir, ".agents", "skills"),
 		filepath.Join(dir, ".codex"),
 	}
 	for _, d := range expectDirs {
@@ -136,18 +138,30 @@ func TestApplyTemplate_Universal(t *testing.T) {
 		t.Fatalf("ApplyTemplate: %v", err)
 	}
 
-	// Both provider directories should exist.
+	// Claude Code dirs are project-scoped; Codex Project only has Skills
+	// (.agents/skills) — Agents and MCP do not exist for Codex / Project.
 	expectDirs := []string{
 		filepath.Join(dir, ".claude", "commands"),
 		filepath.Join(dir, ".claude", "agents"),
 		filepath.Join(dir, ".claude"),
-		filepath.Join(dir, ".codex", "skills"),
-		filepath.Join(dir, ".codex", "agents"),
-		filepath.Join(dir, ".codex"),
+		filepath.Join(dir, ".agents", "skills"),
 	}
 	for _, d := range expectDirs {
 		if _, err := os.Stat(d); err != nil {
 			t.Errorf("expected directory %s to exist: %v", d, err)
+		}
+	}
+
+	// And these *must not* exist — Codex has no agents/ dir and no
+	// project-level config.toml.
+	notExpect := []string{
+		filepath.Join(dir, ".codex", "agents"),
+		filepath.Join(dir, ".codex", "skills"),
+		filepath.Join(dir, ".codex"),
+	}
+	for _, d := range notExpect {
+		if _, err := os.Stat(d); err == nil {
+			t.Errorf("did not expect directory %s to exist", d)
 		}
 	}
 }

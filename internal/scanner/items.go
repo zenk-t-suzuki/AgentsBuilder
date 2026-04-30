@@ -19,13 +19,14 @@ func scanItems(asset *model.Asset, def *assetdef.AssetDef) {
 	case assetdef.DirListing:
 		switch asset.Type {
 		case model.Agents:
-			asset.Items = scanAgentItems(asset.FilePath, asset.Provider)
+			// Only Claude Code stores agents as a directory of .md files.
+			// Codex has no equivalent: agent role definitions live in
+			// config.toml under [agents] (read via EmbeddedTOML).
+			if asset.Provider == model.ClaudeCode {
+				asset.Items = scanAgentItems(asset.FilePath)
+			}
 		case model.Skills:
 			asset.Items = scanSkillItems(asset.FilePath)
-		case model.Plugins:
-			if asset.Provider == model.Codex {
-				asset.Items = scanPluginItemsCodex(asset.FilePath)
-			}
 		}
 	case assetdef.EmbeddedJSON:
 		if def.Key != nil {
@@ -113,10 +114,9 @@ func scanEmbeddedTOML(filePath, prefix string) []model.AssetItem {
 	return items
 }
 
-// scanAgentItems reads agent definitions from a directory.
-// Claude Code agents: .md files with YAML frontmatter (name, description).
-// Codex agents: .toml files with name and description fields.
-func scanAgentItems(dir string, provider model.Provider) []model.AssetItem {
+// scanAgentItems reads agent definitions from a Claude Code agents directory.
+// Each entry is a .md file with YAML frontmatter (name, description).
+func scanAgentItems(dir string) []model.AssetItem {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -128,36 +128,18 @@ func scanAgentItems(dir string, provider model.Provider) []model.AssetItem {
 			continue
 		}
 		name := entry.Name()
+		if !strings.HasSuffix(name, ".md") {
+			continue
+		}
 		fullPath := filepath.Join(dir, name)
 
-		var itemName, desc string
-		switch provider {
-		case model.ClaudeCode:
-			if !strings.HasSuffix(name, ".md") {
-				continue
-			}
-			data, err := os.ReadFile(fullPath)
-			if err != nil {
-				continue
-			}
-			itemName, desc = parseFrontmatter(string(data))
-			if itemName == "" {
-				itemName = strings.TrimSuffix(name, ".md")
-			}
-		case model.Codex:
-			if !strings.HasSuffix(name, ".toml") {
-				continue
-			}
-			data, err := os.ReadFile(fullPath)
-			if err != nil {
-				continue
-			}
-			itemName, desc = parseTomlNameDesc(string(data))
-			if itemName == "" {
-				itemName = strings.TrimSuffix(name, ".toml")
-			}
-		default:
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
 			continue
+		}
+		itemName, desc := parseFrontmatter(string(data))
+		if itemName == "" {
+			itemName = strings.TrimSuffix(name, ".md")
 		}
 
 		items = append(items, model.AssetItem{
@@ -217,46 +199,6 @@ func scanSkillItems(dir string) []model.AssetItem {
 	return items
 }
 
-// scanPluginItemsCodex scans installed Codex plugins from the plugin cache directory.
-// Each subdirectory is a plugin; metadata comes from .codex-plugin/plugin.json.
-func scanPluginItemsCodex(pluginsDir string) []model.AssetItem {
-	entries, err := os.ReadDir(pluginsDir)
-	if err != nil {
-		return nil
-	}
-
-	var items []model.AssetItem
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pluginJSON := filepath.Join(pluginsDir, entry.Name(), ".codex-plugin", "plugin.json")
-		data, err := os.ReadFile(pluginJSON)
-		if err != nil {
-			// Fall back to directory name if plugin.json is missing.
-			items = append(items, model.AssetItem{
-				Name:     entry.Name(),
-				FilePath: filepath.Join(pluginsDir, entry.Name()),
-			})
-			continue
-		}
-
-		var meta struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}
-		if err := json.Unmarshal(data, &meta); err != nil || meta.Name == "" {
-			meta.Name = entry.Name()
-		}
-		items = append(items, model.AssetItem{
-			Name:        meta.Name,
-			Description: meta.Description,
-			FilePath:    filepath.Join(pluginsDir, entry.Name()),
-		})
-	}
-	return items
-}
-
 // parseFrontmatter extracts name and description from YAML frontmatter in a markdown file.
 // The frontmatter must start at the very beginning of the content with "---".
 func parseFrontmatter(content string) (name, description string) {
@@ -294,26 +236,3 @@ func parseFrontmatter(content string) (name, description string) {
 	return
 }
 
-// parseTomlNameDesc extracts name and description from a simple TOML file.
-// Handles quoted and unquoted string values.
-func parseTomlNameDesc(content string) (name, description string) {
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimRight(line, "\r")
-		line = strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(line, "name"); ok {
-			after = strings.TrimSpace(after)
-			if strings.HasPrefix(after, "=") {
-				val := strings.TrimSpace(after[1:])
-				name = strings.Trim(val, `"'`)
-			}
-		}
-		if after, ok := strings.CutPrefix(line, "description"); ok {
-			after = strings.TrimSpace(after)
-			if strings.HasPrefix(after, "=") {
-				val := strings.TrimSpace(after[1:])
-				description = strings.Trim(val, `"'`)
-			}
-		}
-	}
-	return
-}

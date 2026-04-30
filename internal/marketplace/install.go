@@ -113,22 +113,47 @@ func installTo(p Plugin, t InstallTarget) (InstallSummary, error) {
 		}
 	}
 
-	// Hooks → merge each JSON file into the provider's settings.json.
-	// Codex has no hooks support; skip with a warning.
-	if len(p.HookFiles) > 0 {
+	// Hooks → format-detect each snippet, install only into the provider whose
+	// schema matches. Claude Code's hooks (PreToolUse/PostToolUse/etc.) and
+	// Codex's hooks (after_agent/after_tool_use) are not interchangeable, so
+	// snippets authored for one are silently skipped for the other.
+	for _, h := range p.HookFiles {
+		format, err := detectHooksFormat(h)
+		if err != nil {
+			s.Skipped = append(s.Skipped,
+				fmt.Sprintf("hooks %s: 解析失敗 (%v)", filepath.Base(h), err))
+			continue
+		}
+
+		want := providerHookFormat(t.Provider)
+		if !formatMatches(format, want) {
+			s.Skipped = append(s.Skipped,
+				fmt.Sprintf("hooks %s は %s 形式のため %s には適用しません",
+					filepath.Base(h), formatLabel(format), t.Provider.String()))
+			continue
+		}
+
 		def, ok := assetdef.Lookup(t.Provider, t.Scope, model.Hooks)
 		if !ok {
 			s.Skipped = append(s.Skipped,
-				fmt.Sprintf("hooks not supported on %s", t.Provider.String()))
-		} else {
-			target := filepath.Join(t.BasePath, def.PrimaryPath)
-			for _, h := range p.HookFiles {
-				if err := mergeJSONFile(h, target); err != nil {
-					return s, fmt.Errorf("merging hooks %s: %w", filepath.Base(h), err)
-				}
-				s.Hooks++
-			}
+				fmt.Sprintf("hooks not supported at %s/%s",
+					t.Provider.String(), scopeLabel(t.Scope)))
+			continue
 		}
+		target := filepath.Join(t.BasePath, def.PrimaryPath)
+		switch def.Storage {
+		case assetdef.EmbeddedJSON:
+			if err := mergeJSONFile(h, target); err != nil {
+				return s, fmt.Errorf("merging hooks %s: %w", filepath.Base(h), err)
+			}
+		case assetdef.EmbeddedTOML:
+			if err := mergeJSONHooksIntoTOML(h, target); err != nil {
+				return s, fmt.Errorf("merging hooks %s into TOML: %w", filepath.Base(h), err)
+			}
+		default:
+			return s, fmt.Errorf("unexpected hooks storage kind for %s", t.Provider.String())
+		}
+		s.Hooks++
 	}
 
 	// MCP → merge into the provider's MCP config. For Codex the JSON snippet
@@ -254,61 +279,81 @@ func copyFile(src, dst string) error {
 }
 
 // mergeJSONIntoTOML converts a Claude-Code-style MCP JSON snippet to TOML and
-// appends it to target. The expected snippet shape is:
+// appends it to target. Expected snippet shape:
 //
 //	{ "mcpServers": { "<name>": { "command": "...", "args": [...], "env": {...} } } }
 //
-// Each server becomes a `[mcp_servers.<name>]` block with sub-table `[mcp_servers.<name>.env]`
-// when env is present. Unknown fields are emitted with best-effort string/number/bool
-// rendering and any failures fall back to a TOML comment.
+// HTTP transport entries (snippet contains `url` instead of `command`) are
+// emitted with their fields written through verbatim: Codex's HTTP fields are
+// `url`, `bearer_token_env_var`, `http_headers`, but Claude's are `url`,
+// `bearer_token`, `headers`. Per the project's design decision, we do *not*
+// translate field names — Codex may not accept the resulting entries, but the
+// install does not silently drop them.
 func mergeJSONIntoTOML(snippetPath, target string) error {
+	return mergeJSONNamedTableIntoTOML(snippetPath, target, "mcpServers", "mcp_servers", "env")
+}
+
+// mergeJSONHooksIntoTOML converts a Codex-style hooks JSON snippet to TOML.
+// Expected snippet shape mirrors Codex's [hooks.<name>] table:
+//
+//	{ "hooks": { "<name>": { "event": "after_tool_use", "command": "..." } } }
+//
+// or the equivalent flat top-level form (no enclosing "hooks" key).
+func mergeJSONHooksIntoTOML(snippetPath, target string) error {
+	return mergeJSONNamedTableIntoTOML(snippetPath, target, "hooks", "hooks", "")
+}
+
+// mergeJSONNamedTableIntoTOML reads a JSON snippet shaped like
+// `{ <topKey>: { <name>: { ...fields... } } }` and appends each named entry
+// to target as a `[<table>.<name>]` TOML section. When subtableField is
+// non-empty, the named field's value (expected to be a string-keyed object)
+// becomes a `[<table>.<name>.<subtableField>]` sub-table.
+//
+// If the snippet's top level *is* the named map (i.e. <topKey> is absent and
+// the root looks like `{ <name>: {...} }`), that shape is also accepted.
+//
+// Existing sections of the same name in target are left untouched and skipped.
+func mergeJSONNamedTableIntoTOML(snippetPath, target, topKey, table, subtableField string) error {
 	data, err := os.ReadFile(snippetPath)
 	if err != nil {
 		return err
 	}
-	var doc map[string]map[string]map[string]json.RawMessage
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("parsing snippet: %w", err)
+	entries, err := extractNamedMap(data, topKey)
+	if err != nil {
+		return err
 	}
-
-	servers, ok := doc["mcpServers"]
-	if !ok {
-		return fmt.Errorf("snippet missing top-level mcpServers key")
+	if len(entries) == 0 {
+		return nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
 
-	// If target exists, read it so we can skip duplicate sections.
 	existing := ""
 	if b, err := os.ReadFile(target); err == nil {
 		existing = string(b)
 	}
-
 	f, err := os.OpenFile(target, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	for name, server := range servers {
-		header := fmt.Sprintf("[mcp_servers.%s]", name)
+	for name, entry := range entries {
+		header := fmt.Sprintf("[%s.%s]", table, name)
 		if strings.Contains(existing, header) {
 			continue
 		}
 		var b strings.Builder
-		if existing != "" || b.Len() > 0 {
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
 		b.WriteString(header)
 		b.WriteString("\n")
 
-		// Render scalars first, env at the end as a sub-table.
-		var envRaw json.RawMessage
-		for k, v := range server {
-			if k == "env" {
-				envRaw = v
+		var subRaw json.RawMessage
+		for k, v := range entry {
+			if subtableField != "" && k == subtableField {
+				subRaw = v
 				continue
 			}
 			b.WriteString(k)
@@ -316,12 +361,12 @@ func mergeJSONIntoTOML(snippetPath, target string) error {
 			b.WriteString(tomlValue(v))
 			b.WriteString("\n")
 		}
-		if len(envRaw) > 0 {
-			var env map[string]string
-			if err := json.Unmarshal(envRaw, &env); err == nil && len(env) > 0 {
+		if len(subRaw) > 0 {
+			var sub map[string]string
+			if err := json.Unmarshal(subRaw, &sub); err == nil && len(sub) > 0 {
 				b.WriteString("\n")
-				b.WriteString(fmt.Sprintf("[mcp_servers.%s.env]\n", name))
-				for k, v := range env {
+				b.WriteString(fmt.Sprintf("[%s.%s.%s]\n", table, name, subtableField))
+				for k, v := range sub {
 					b.WriteString(k)
 					b.WriteString(" = ")
 					b.WriteString(tomlString(v))
@@ -334,6 +379,163 @@ func mergeJSONIntoTOML(snippetPath, target string) error {
 		}
 	}
 	return nil
+}
+
+// extractNamedMap unmarshals data and returns the named-map shape used by
+// mergeJSONNamedTableIntoTOML. It accepts both the wrapped form
+// `{ topKey: { <name>: {...} } }` and the bare form `{ <name>: {...} }`.
+func extractNamedMap(data []byte, topKey string) (map[string]map[string]json.RawMessage, error) {
+	// Try wrapped form first.
+	var wrapped map[string]map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(data, &wrapped); err == nil {
+		if entries, ok := wrapped[topKey]; ok {
+			return entries, nil
+		}
+	}
+	// Fall back to bare form.
+	var bare map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(data, &bare); err != nil {
+		return nil, fmt.Errorf("parsing snippet: %w", err)
+	}
+	return bare, nil
+}
+
+// ─── Hook-format detection ────────────────────────────────────────────────────
+
+// HooksFormat classifies a hooks JSON snippet by which provider's schema it
+// matches. The same snippet can declare entries in both formats — that case
+// returns `HooksFormatBoth` and the install layer treats it as installable to
+// either provider.
+type HooksFormat int
+
+const (
+	// HooksFormatUnknown means no recognisable Claude/Codex event names were
+	// found and the snippet should be skipped on every provider.
+	HooksFormatUnknown HooksFormat = iota
+	// HooksFormatClaude matches Claude Code event names (PreToolUse, etc.).
+	HooksFormatClaude
+	// HooksFormatCodex matches Codex event names (after_agent, after_tool_use).
+	HooksFormatCodex
+	// HooksFormatBoth is set when both schemas' marker keys appear.
+	HooksFormatBoth
+)
+
+var (
+	claudeHookEvents = map[string]struct{}{
+		"PreToolUse":        {},
+		"PostToolUse":       {},
+		"UserPromptSubmit":  {},
+		"SessionStart":      {},
+		"Stop":              {},
+		"SubagentStop":      {},
+		"Notification":      {},
+		"PreCompact":        {},
+		"PermissionRequest": {},
+	}
+	codexHookEvents = map[string]struct{}{
+		"after_agent":    {},
+		"after_tool_use": {},
+	}
+)
+
+// detectHooksFormat reads a JSON snippet and classifies its schema by the
+// presence of Claude or Codex hook event names anywhere in the document.
+//
+// Claude Code expresses event names as map *keys* (e.g. `{"PreToolUse": [...]}`)
+// while Codex expresses them as string *values* of an `event` field
+// (e.g. `{"my_hook": {"event": "after_tool_use", ...}}`). Detection therefore
+// walks both keys and leaf string values.
+func detectHooksFormat(snippetPath string) (HooksFormat, error) {
+	data, err := os.ReadFile(snippetPath)
+	if err != nil {
+		return HooksFormatUnknown, err
+	}
+	var doc any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return HooksFormatUnknown, fmt.Errorf("parsing hooks snippet: %w", err)
+	}
+	var hasClaude, hasCodex bool
+	walkJSON(doc, func(k string, isKey bool) {
+		if isKey {
+			if _, ok := claudeHookEvents[k]; ok {
+				hasClaude = true
+			}
+			if _, ok := codexHookEvents[k]; ok {
+				hasCodex = true
+			}
+			return
+		}
+		// String value: only Codex events are checked here. Claude events
+		// would never appear as values in a well-formed snippet.
+		if _, ok := codexHookEvents[k]; ok {
+			hasCodex = true
+		}
+	})
+	switch {
+	case hasClaude && hasCodex:
+		return HooksFormatBoth, nil
+	case hasClaude:
+		return HooksFormatClaude, nil
+	case hasCodex:
+		return HooksFormatCodex, nil
+	}
+	return HooksFormatUnknown, nil
+}
+
+// walkJSON recursively visits every map key (with isKey=true) and every leaf
+// string value (with isKey=false).
+func walkJSON(v any, visit func(s string, isKey bool)) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, child := range t {
+			visit(k, true)
+			walkJSON(child, visit)
+		}
+	case []any:
+		for _, child := range t {
+			walkJSON(child, visit)
+		}
+	case string:
+		visit(t, false)
+	}
+}
+
+// providerHookFormat returns the hook format expected by a provider.
+func providerHookFormat(p model.Provider) HooksFormat {
+	if p == model.Codex {
+		return HooksFormatCodex
+	}
+	return HooksFormatClaude
+}
+
+// formatMatches reports whether `got` is compatible with `want`. Snippets
+// containing both schemas (`HooksFormatBoth`) match every concrete request.
+func formatMatches(got, want HooksFormat) bool {
+	if got == HooksFormatBoth {
+		return true
+	}
+	return got == want
+}
+
+// formatLabel returns a short Japanese label for user-facing messages.
+func formatLabel(f HooksFormat) string {
+	switch f {
+	case HooksFormatClaude:
+		return "Claude Code"
+	case HooksFormatCodex:
+		return "Codex"
+	case HooksFormatBoth:
+		return "両対応"
+	}
+	return "形式不明"
+}
+
+// scopeLabel returns a short label for an install scope.
+func scopeLabel(s model.Scope) string {
+	if s == model.Project {
+		return "Project"
+	}
+	return "Global"
 }
 
 // tomlValue renders a JSON value as a TOML literal. Strings are quoted, arrays

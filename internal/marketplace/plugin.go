@@ -1,6 +1,7 @@
 package marketplace
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,9 +74,10 @@ func LoadMarketplace(manifestPath string) (*Manifest, []Plugin, error) {
 			p.UnresolvedReason = reason
 		} else {
 			p.Dir = dir
-			discoverComponents(&p)
+			pm, _ := LoadPluginManifest(dir)
+			discoverComponents(&p, pm)
 			// Plugin manifest overrides metadata when present.
-			if pm, _ := LoadPluginManifest(dir); pm != nil {
+			if pm != nil {
 				if pm.Description != "" {
 					p.Description = pm.Description
 				}
@@ -222,13 +224,57 @@ func clonePluginCache(pluginName, url, ref, sha string) (string, string) {
 }
 
 // discoverComponents populates p.Skills/Commands/Agents/HookFiles/McpFiles by
-// walking the conventional plugin layout.
-func discoverComponents(p *Plugin) {
-	p.Skills = listSubdirsContaining(filepath.Join(p.Dir, "skills"), "SKILL.md")
+// walking the plugin layout. When the plugin's own manifest declares custom
+// paths (Codex's plugin.json `skills`, `mcpServers`, `apps`, `hooks` fields),
+// those override the conventional `skills/`, `mcp/`, `hooks/` directories.
+func discoverComponents(p *Plugin, pm *PluginManifest) {
+	skillsDir := filepath.Join(p.Dir, "skills")
+	mcpDir := filepath.Join(p.Dir, "mcp")
+	hooksDir := filepath.Join(p.Dir, "hooks")
+
+	if pm != nil {
+		if pm.SkillsPath != "" {
+			skillsDir = filepath.Join(p.Dir, filepath.FromSlash(pm.SkillsPath))
+		}
+		if pm.McpServersPath != "" {
+			mcpDir = filepath.Join(p.Dir, filepath.FromSlash(pm.McpServersPath))
+		}
+	}
+
+	p.Skills = listSubdirsContaining(skillsDir, "SKILL.md")
 	p.Commands = listFilesWithExt(filepath.Join(p.Dir, "commands"), ".md")
 	p.Agents = listFilesWithExt(filepath.Join(p.Dir, "agents"), ".md")
-	p.HookFiles = listFilesWithExt(filepath.Join(p.Dir, "hooks"), ".json")
-	p.McpFiles = listFilesWithExt(filepath.Join(p.Dir, "mcp"), ".json")
+	p.McpFiles = collectJSONOrDir(mcpDir)
+
+	// Hooks: Codex's plugin.json may declare a string path to a single hooks
+	// file (or, less commonly, an inline object/array — those are skipped here
+	// and would need bespoke handling). Fall back to listing hooks/*.json.
+	if pm != nil && len(pm.HooksField) > 0 {
+		var hooksPath string
+		if err := json.Unmarshal(pm.HooksField, &hooksPath); err == nil && hooksPath != "" {
+			full := filepath.Join(p.Dir, filepath.FromSlash(hooksPath))
+			if fi, err := os.Stat(full); err == nil && !fi.IsDir() {
+				p.HookFiles = []string{full}
+			}
+		}
+	}
+	if p.HookFiles == nil {
+		p.HookFiles = listFilesWithExt(hooksDir, ".json")
+	}
+}
+
+// collectJSONOrDir returns the absolute paths of all .json files under root
+// when root is a directory, or the path itself wrapped in a slice when root
+// is a single .json file. Missing root returns nil.
+func collectJSONOrDir(root string) []string {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil
+	}
+	if !info.IsDir() {
+		return []string{root}
+	}
+	return listFilesWithExt(root, ".json")
 }
 
 // listSubdirsContaining returns absolute paths to every direct subdirectory

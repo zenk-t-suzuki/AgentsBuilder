@@ -113,28 +113,32 @@ var allDefs = []AssetDef{
 		[]string{"CLAUDE.md"}, "CLAUDE.md", nil},
 
 	// ── Codex / Global ──
+	// Paths verified against openai/codex Rust source (2026-04 snapshot):
+	//   - codex-rs/core-skills/src/loader.rs   (.agents/skills, $HOME/.agents/skills)
+	//   - codex-rs/config/src/config_toml.rs   ([mcp_servers], [hooks], [plugins], etc.)
+	//   - codex-rs/core/src/agents_md.rs       (AGENTS.override.md > AGENTS.md priority)
 	{model.Skills, model.Codex, model.Global, DirListing,
-		[]string{".codex/skills", ".agents/skills"}, ".codex/skills", nil},
-	{model.Agents, model.Codex, model.Global, DirListing,
-		[]string{".codex/agents"}, ".codex/agents", nil},
+		[]string{".agents/skills"}, ".agents/skills", nil},
 	{model.MCP, model.Codex, model.Global, EmbeddedTOML,
 		[]string{".codex/config.toml"}, ".codex/config.toml",
 		&ConfigKey{TOMLPrefix: "mcp_servers"}},
-	{model.Plugins, model.Codex, model.Global, DirListing,
-		[]string{".codex/.tmp/plugins/plugins"}, ".codex/.tmp/plugins/plugins", nil},
+	{model.Hooks, model.Codex, model.Global, EmbeddedTOML,
+		[]string{".codex/config.toml"}, ".codex/config.toml",
+		&ConfigKey{TOMLPrefix: "hooks"}},
+	{model.Plugins, model.Codex, model.Global, EmbeddedTOML,
+		[]string{".codex/config.toml"}, ".codex/config.toml",
+		&ConfigKey{TOMLPrefix: "plugins"}},
 	{model.AgentsMD, model.Codex, model.Global, SingleFile,
-		[]string{".codex/AGENTS.md"}, ".codex/AGENTS.md", nil},
+		[]string{".codex/AGENTS.override.md", ".codex/AGENTS.md"}, ".codex/AGENTS.md", nil},
 
 	// ── Codex / Project ──
+	// Codex's config.toml is global-only — there is no project-level config,
+	// so MCP/Hooks/Plugins do not appear here. Skills and AGENTS.md walk the
+	// repo from project root downward.
 	{model.Skills, model.Codex, model.Project, DirListing,
-		[]string{".codex/skills", ".agents/skills"}, ".codex/skills", nil},
-	{model.Agents, model.Codex, model.Project, DirListing,
-		[]string{".codex/agents"}, ".codex/agents", nil},
-	{model.MCP, model.Codex, model.Project, EmbeddedTOML,
-		[]string{".codex/config.toml"}, ".codex/config.toml",
-		&ConfigKey{TOMLPrefix: "mcp_servers"}},
+		[]string{".agents/skills"}, ".agents/skills", nil},
 	{model.AgentsMD, model.Codex, model.Project, SingleFile,
-		[]string{"AGENTS.md"}, "AGENTS.md", nil},
+		[]string{"AGENTS.override.md", "AGENTS.md"}, "AGENTS.md", nil},
 }
 
 // defIndex is a lookup map keyed by (Provider, Scope, AssetType).
