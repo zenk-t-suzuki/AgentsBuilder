@@ -119,7 +119,7 @@ func TestScanEmbeddedJSON_Plugins(t *testing.T) {
 func TestScanEmbeddedTOML(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
-	content := "[mcp_servers.my-server]\ncommand = \"npx\"\n[mcp_servers.other-server]\ncommand = \"uvx\"\n"
+	content := "[mcp_servers.my-server]\ncommand = \"npx\"\n[mcp_servers.my-server.env]\nTOKEN = \"x\"\n[mcp_servers.\"other-server\"]\ncommand = \"uvx\"\n"
 	os.WriteFile(configPath, []byte(content), 0o644)
 
 	items := scanEmbeddedTOML(configPath, "mcp_servers")
@@ -132,6 +132,46 @@ func TestScanEmbeddedTOML(t *testing.T) {
 	}
 	if !names["my-server"] || !names["other-server"] {
 		t.Errorf("expected my-server and other-server, got %v", names)
+	}
+	if names["my-server.env"] {
+		t.Errorf("subtable should not be reported as a separate item: %v", names)
+	}
+}
+
+func TestScanCodexSkillItems(t *testing.T) {
+	dir := t.TempDir()
+	rootSkill := filepath.Join(dir, "skills")
+	nestedSkill := filepath.Join(dir, "skills", "tools", "reviewer")
+	os.MkdirAll(nestedSkill, 0o755)
+	os.WriteFile(filepath.Join(rootSkill, "SKILL.md"), []byte("---\nname: root-skill\ndescription: Root package\n---\n"), 0o644)
+	os.WriteFile(filepath.Join(nestedSkill, "SKILL.md"), []byte("---\nname: reviewer\ndescription: Reviews\n---\n"), 0o644)
+
+	items := scanCodexSkillItems(rootSkill)
+	names := map[string]string{}
+	for _, it := range items {
+		names[it.Name] = it.Description
+	}
+	if names["root-skill"] != "Root package" || names["reviewer"] != "Reviews" {
+		t.Errorf("expected root and nested Codex skills, got %v", names)
+	}
+}
+
+func TestScanCodexAgentRoleItems(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".codex", "agents")
+	os.MkdirAll(agentsDir, 0o755)
+	os.WriteFile(filepath.Join(agentsDir, "reviewer.toml"), []byte("name = \"reviewer\"\ndescription = \"Reviews changes\"\n"), 0o644)
+
+	items := scanCodexAgentRoleItems(agentsDir)
+	if len(items) != 1 || items[0].Name != "reviewer" || items[0].Description != "Reviews changes" {
+		t.Fatalf("unexpected agent role items: %#v", items)
+	}
+
+	configPath := filepath.Join(dir, ".codex", "config.toml")
+	os.WriteFile(configPath, []byte("[agents.roles.\"planner\"]\ndescription = \"Plans\"\n"), 0o644)
+	items = scanCodexAgentRoleItems(configPath)
+	if len(items) != 1 || items[0].Name != "planner" {
+		t.Fatalf("unexpected config agent role items: %#v", items)
 	}
 }
 

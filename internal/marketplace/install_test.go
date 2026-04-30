@@ -113,8 +113,8 @@ func TestInstallPlugin_Skills(t *testing.T) {
 		[]byte("---\nname: my-skill\n---\nbody"), 0o644)
 
 	p := Plugin{
-		Name: "test",
-		Dir:  pluginDir,
+		Name:   "test",
+		Dir:    pluginDir,
 		Skills: []string{filepath.Join(pluginDir, "skills", "my-skill")},
 	}
 	target := InstallTarget{
@@ -133,6 +133,44 @@ func TestInstallPlugin_Skills(t *testing.T) {
 	want := filepath.Join(dir, "project", ".claude", "commands", "my-skill", "SKILL.md")
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("skill not at expected path %s: %v", want, err)
+	}
+}
+
+func TestInstallPlugin_CodexRootSkillAndEnable(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "plugin")
+	os.MkdirAll(filepath.Join(pluginDir, "skills"), 0o755)
+	os.WriteFile(filepath.Join(pluginDir, "skills", "SKILL.md"), []byte("---\nname: root\n---\n"), 0o644)
+
+	p := Plugin{
+		Name:        "codex-plugin",
+		Marketplace: "market",
+		Dir:         pluginDir,
+		Skills:      []string{filepath.Join(pluginDir, "skills")},
+	}
+	target := InstallTarget{
+		Provider: model.Codex,
+		Scope:    model.Global,
+		BasePath: filepath.Join(dir, "home"),
+	}
+
+	summaries, err := InstallPlugin(p, []InstallTarget{target})
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if summaries[0].Skills != 1 {
+		t.Errorf("expected 1 skill installed, got %d", summaries[0].Skills)
+	}
+	wantSkill := filepath.Join(dir, "home", ".agents", "skills", "codex-plugin", "SKILL.md")
+	if _, err := os.Stat(wantSkill); err != nil {
+		t.Errorf("root skill not at expected path %s: %v", wantSkill, err)
+	}
+	config, err := os.ReadFile(filepath.Join(dir, "home", ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("codex config.toml missing: %v", err)
+	}
+	if !strings.Contains(string(config), `[plugins."codex-plugin@market"]`) || !strings.Contains(string(config), "enabled = true") {
+		t.Errorf("Codex plugin was not enabled:\n%s", config)
 	}
 }
 

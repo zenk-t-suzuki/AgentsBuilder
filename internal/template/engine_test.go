@@ -138,13 +138,15 @@ func TestApplyTemplate_Universal(t *testing.T) {
 		t.Fatalf("ApplyTemplate: %v", err)
 	}
 
-	// Claude Code dirs are project-scoped; Codex Project only has Skills
-	// (.agents/skills) — Agents and MCP do not exist for Codex / Project.
+	// Claude Code dirs are project-scoped; Codex Project has Skills plus
+	// .codex/ for agent roles and config.toml-backed MCP/Hooks.
 	expectDirs := []string{
 		filepath.Join(dir, ".claude", "commands"),
 		filepath.Join(dir, ".claude", "agents"),
 		filepath.Join(dir, ".claude"),
 		filepath.Join(dir, ".agents", "skills"),
+		filepath.Join(dir, ".codex", "agents"),
+		filepath.Join(dir, ".codex"),
 	}
 	for _, d := range expectDirs {
 		if _, err := os.Stat(d); err != nil {
@@ -152,12 +154,9 @@ func TestApplyTemplate_Universal(t *testing.T) {
 		}
 	}
 
-	// And these *must not* exist — Codex has no agents/ dir and no
-	// project-level config.toml.
+	// Codex skills do not live under .codex/skills.
 	notExpect := []string{
-		filepath.Join(dir, ".codex", "agents"),
 		filepath.Join(dir, ".codex", "skills"),
-		filepath.Join(dir, ".codex"),
 	}
 	for _, d := range notExpect {
 		if _, err := os.Stat(d); err == nil {

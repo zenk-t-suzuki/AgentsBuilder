@@ -93,6 +93,9 @@ func (m DetailModel) View() string {
 			if m.Diff.GlobalExists && m.Diff.ProjectExists {
 				b.WriteString(fmt.Sprintf("  %s Both scopes have this asset\n", DiffIndicator))
 			}
+			if len(m.Diff.ItemConflicts) > 0 {
+				b.WriteString(fmt.Sprintf("  %s Same item names: %s\n", DiffIndicator, strings.Join(m.Diff.ItemConflicts, ", ")))
+			}
 		}
 	}
 

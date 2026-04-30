@@ -12,6 +12,10 @@ import (
 
 // scanItems populates the Items field of an asset based on its definition.
 func scanItems(asset *model.Asset, def *assetdef.AssetDef) {
+	scanItemsForPath(asset, def, "")
+}
+
+func scanItemsForPath(asset *model.Asset, def *assetdef.AssetDef, relPath string) {
 	if !asset.Exists {
 		return
 	}
@@ -26,7 +30,7 @@ func scanItems(asset *model.Asset, def *assetdef.AssetDef) {
 				asset.Items = scanAgentItems(asset.FilePath)
 			}
 		case model.Skills:
-			asset.Items = scanSkillItems(asset.FilePath)
+			asset.Items = scanSkillItems(asset.FilePath, asset.Provider, relPath)
 		}
 	case assetdef.EmbeddedJSON:
 		if def.Key != nil {
@@ -36,7 +40,9 @@ func scanItems(asset *model.Asset, def *assetdef.AssetDef) {
 		if def.Key != nil {
 			asset.Items = scanEmbeddedTOML(asset.FilePath, def.Key.TOMLPrefix)
 		}
-	// SingleFile: no sub-items to scan
+	case assetdef.CodexAgentRoles:
+		asset.Items = scanCodexAgentRoleItems(asset.FilePath)
+		// SingleFile: no sub-items to scan
 	}
 }
 
@@ -94,24 +100,41 @@ func scanEmbeddedTOML(filePath, prefix string) []model.AssetItem {
 		return nil
 	}
 
-	headerPrefix := "[" + prefix + "."
 	var items []model.AssetItem
 	seen := make(map[string]bool)
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, headerPrefix) && strings.HasSuffix(line, "]") {
-			name := strings.TrimPrefix(line, headerPrefix)
-			name = strings.TrimSuffix(name, "]")
-			if name != "" && !seen[name] {
-				seen[name] = true
-				items = append(items, model.AssetItem{
-					Name:     name,
-					FilePath: filePath,
-				})
-			}
+		name, ok := tomlHeaderName(line, prefix)
+		if !ok || name == "" || seen[name] {
+			continue
 		}
+		seen[name] = true
+		items = append(items, model.AssetItem{
+			Name:     name,
+			FilePath: filePath,
+		})
 	}
 	return items
+}
+
+func tomlHeaderName(line, prefix string) (string, bool) {
+	headerPrefix := "[" + prefix + "."
+	if !strings.HasPrefix(line, headerPrefix) || !strings.HasSuffix(line, "]") {
+		return "", false
+	}
+	rest := strings.TrimSuffix(strings.TrimPrefix(line, headerPrefix), "]")
+	if strings.HasPrefix(rest, `"`) {
+		rest = strings.TrimPrefix(rest, `"`)
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			return "", false
+		}
+		return rest[:end], true
+	}
+	if dot := strings.Index(rest, "."); dot >= 0 {
+		rest = rest[:dot]
+	}
+	return rest, true
 }
 
 // scanAgentItems reads agent definitions from a Claude Code agents directory.
@@ -155,7 +178,12 @@ func scanAgentItems(dir string) []model.AssetItem {
 // Each skill is either:
 //   - A subdirectory containing a SKILL.md with frontmatter (name, description)
 //   - A .md file whose name is the skill name
-func scanSkillItems(dir string) []model.AssetItem {
+func scanSkillItems(dir string, provider model.Provider, relPath string) []model.AssetItem {
+	if provider == model.Codex || strings.Contains(filepath.ToSlash(relPath), ".codex/skills") ||
+		strings.Contains(filepath.ToSlash(relPath), ".agents/skills") {
+		return scanCodexSkillItems(dir)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -199,6 +227,99 @@ func scanSkillItems(dir string) []model.AssetItem {
 	return items
 }
 
+func scanCodexSkillItems(root string) []model.AssetItem {
+	var items []model.AssetItem
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") && path != root {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != "SKILL.md" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		itemName, desc := parseFrontmatter(string(data))
+		if itemName == "" {
+			itemName = filepath.Base(filepath.Dir(path))
+		}
+		items = append(items, model.AssetItem{
+			Name:        itemName,
+			Description: desc,
+			FilePath:    path,
+		})
+		return nil
+	})
+	return items
+}
+
+func scanCodexAgentRoleItems(path string) []model.AssetItem {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+	if info.IsDir() {
+		return scanCodexAgentRoleDir(path)
+	}
+	return scanEmbeddedTOML(path, "agents.roles")
+}
+
+func scanCodexAgentRoleDir(dir string) []model.AssetItem {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var items []model.AssetItem
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".toml") {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+		displayName := strings.TrimSuffix(name, ".toml")
+		if parsedName, desc := parseCodexRoleFile(fullPath); parsedName != "" || desc != "" {
+			if parsedName != "" {
+				displayName = parsedName
+			}
+			items = append(items, model.AssetItem{Name: displayName, Description: desc, FilePath: fullPath})
+		} else {
+			items = append(items, model.AssetItem{Name: displayName, FilePath: fullPath})
+		}
+	}
+	return items
+}
+
+func parseCodexRoleFile(path string) (name, description string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "name":
+			name = strings.Trim(strings.TrimSpace(value), `"`)
+		case "description":
+			description = strings.Trim(strings.TrimSpace(value), `"`)
+		}
+	}
+	return name, description
+}
+
 // parseFrontmatter extracts name and description from YAML frontmatter in a markdown file.
 // The frontmatter must start at the very beginning of the content with "---".
 func parseFrontmatter(content string) (name, description string) {
@@ -235,4 +356,3 @@ func parseFrontmatter(content string) (name, description string) {
 	}
 	return
 }
-

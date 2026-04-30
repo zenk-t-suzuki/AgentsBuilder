@@ -3,6 +3,7 @@ package scanner
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"agentsbuilder/internal/assetdef"
 	"agentsbuilder/internal/model"
@@ -15,12 +16,26 @@ func ScanGlobal(provider model.Provider) []model.Asset {
 	if err != nil {
 		return nil
 	}
-	return scanAssets(home, assetdef.ForProviderScope(provider, model.Global))
+	defs := assetdef.ForProviderScope(provider, model.Global)
+	if provider == model.Codex {
+		defs = expandCodexHomePaths(defs)
+	}
+	return scanAssets(home, defs)
 }
 
 // ScanProject scans a project directory for provider-specific assets.
 func ScanProject(provider model.Provider, projectPath string) []model.Asset {
-	return scanAssets(projectPath, assetdef.ForProviderScope(provider, model.Project))
+	defs := assetdef.ForProviderScope(provider, model.Project)
+	if provider == model.Codex {
+		defs = expandProjectScanPaths(projectPath, defs, ".agents", "skills")
+		defs = expandProjectScanPaths(projectPath, defs, ".codex", "config.toml")
+		defs = expandProjectScanPaths(projectPath, defs, ".codex", "agents")
+	} else if provider == model.ClaudeCode {
+		defs = expandProjectScanPaths(projectPath, defs, ".claude", "skills")
+		defs = expandProjectScanPaths(projectPath, defs, ".claude", "commands")
+		defs = expandProjectScanPaths(projectPath, defs, ".claude", "agents")
+	}
+	return scanAssets(projectPath, defs)
 }
 
 // scanAssets checks each known asset definition under basePath and returns
@@ -37,11 +52,11 @@ func scanAssets(basePath string, defs []assetdef.AssetDef) []model.Asset {
 		var mergedItems []model.AssetItem
 
 		for i, relPath := range def.ScanPaths {
-			fullPath := filepath.Join(basePath, relPath)
+			fullPath := scopedPath(basePath, relPath)
 			if i == 0 {
 				primaryPath = fullPath // default display path
 			}
-			if !pathExists(fullPath, def.IsFile()) {
+			if !pathExistsForDef(fullPath, def) {
 				continue
 			}
 			if !exists {
@@ -57,7 +72,7 @@ func scanAssets(basePath string, defs []assetdef.AssetDef) []model.Asset {
 				Exists:   true,
 				Active:   true,
 			}
-			scanItems(&tmp, &def)
+			scanItemsForPath(&tmp, &def, relPath)
 			mergedItems = append(mergedItems, tmp.Items...)
 		}
 
@@ -72,6 +87,126 @@ func scanAssets(basePath string, defs []assetdef.AssetDef) []model.Asset {
 		})
 	}
 	return assets
+}
+
+func scopedPath(basePath, relPath string) string {
+	if filepath.IsAbs(relPath) {
+		return relPath
+	}
+	return filepath.Join(basePath, relPath)
+}
+
+func expandCodexHomePaths(defs []assetdef.AssetDef) []assetdef.AssetDef {
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		return defs
+	}
+	codexHome = filepath.Clean(codexHome)
+	if !filepath.IsAbs(codexHome) {
+		if abs, err := filepath.Abs(codexHome); err == nil {
+			codexHome = abs
+		}
+	}
+	defaultCodexHome := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		defaultCodexHome = filepath.Join(home, ".codex")
+	}
+	if codexHome == defaultCodexHome {
+		return defs
+	}
+	for i := range defs {
+		var expanded []string
+		for _, p := range defs[i].ScanPaths {
+			if strings.HasPrefix(p, ".codex/") {
+				expanded = append(expanded, filepath.Join(codexHome, strings.TrimPrefix(p, ".codex/")))
+			}
+			expanded = append(expanded, p)
+		}
+		defs[i].ScanPaths = dedupePaths(expanded)
+	}
+	return defs
+}
+
+func dedupePaths(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+func pathExistsForDef(path string, def assetdef.AssetDef) bool {
+	if def.Storage == assetdef.CodexAgentRoles {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+	return pathExists(path, def.IsFile())
+}
+
+func expandProjectScanPaths(projectPath string, defs []assetdef.AssetDef, configDir, leaf string) []assetdef.AssetDef {
+	extra := discoverProjectConfigPaths(projectPath, configDir, leaf)
+	if len(extra) == 0 {
+		return defs
+	}
+	for i := range defs {
+		if !definitionUsesPath(defs[i], filepath.Join(configDir, leaf)) {
+			continue
+		}
+		seen := make(map[string]bool, len(defs[i].ScanPaths)+len(extra))
+		for _, p := range defs[i].ScanPaths {
+			seen[p] = true
+		}
+		for _, p := range extra {
+			if !seen[p] {
+				defs[i].ScanPaths = append(defs[i].ScanPaths, p)
+				seen[p] = true
+			}
+		}
+	}
+	return defs
+}
+
+func definitionUsesPath(def assetdef.AssetDef, relPath string) bool {
+	for _, p := range def.ScanPaths {
+		if p == relPath {
+			return true
+		}
+	}
+	return false
+}
+
+func discoverProjectConfigPaths(projectPath, configDir, leaf string) []string {
+	var paths []string
+	root := filepath.Clean(projectPath)
+	targetSuffix := string(filepath.Separator) + filepath.Join(configDir, leaf)
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() {
+			if leaf != filepath.Base(path) || !strings.HasSuffix(path, targetSuffix) {
+				return nil
+			}
+		}
+		name := d.Name()
+		if d.IsDir() && (name == ".git" || name == "node_modules" || name == "vendor") {
+			return filepath.SkipDir
+		}
+		if !strings.HasSuffix(path, targetSuffix) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err == nil && rel != "." {
+			paths = append(paths, rel)
+		}
+		return nil
+	})
+	return paths
 }
 
 // ScanAllGlobal scans global assets for all providers, ordered by AssetType then Provider.

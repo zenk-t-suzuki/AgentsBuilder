@@ -92,13 +92,13 @@ type CodexPluginPolicy struct {
 // ─── Raw on-disk shapes ───────────────────────────────────────────────────────
 
 type claudeManifest struct {
-	Schema      string             `json:"$schema,omitempty"`
-	Name        string             `json:"name"`
-	Description string             `json:"description,omitempty"`
-	Version     string             `json:"version,omitempty"`
-	Owner       Owner              `json:"owner"`
-	Metadata    *Metadata          `json:"metadata,omitempty"`
-	Plugins     []claudePluginRaw  `json:"plugins"`
+	Schema      string            `json:"$schema,omitempty"`
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Version     string            `json:"version,omitempty"`
+	Owner       Owner             `json:"owner"`
+	Metadata    *Metadata         `json:"metadata,omitempty"`
+	Plugins     []claudePluginRaw `json:"plugins"`
 }
 
 type claudePluginRaw struct {
@@ -283,11 +283,13 @@ type PluginManifest struct {
 }
 
 // LoadPluginManifest reads a plugin manifest. It tries Claude's path first
-// (`<plugin>/.claude-plugin/plugin.json`) and falls back to Codex's
-// (`<plugin>/plugin.json`). Missing manifest is returned as nil with no error.
+// (`<plugin>/.claude-plugin/plugin.json`) and falls back to Codex's current
+// (`<plugin>/.codex-plugin/plugin.json`) and legacy (`<plugin>/plugin.json`)
+// paths. Missing manifest is returned as nil with no error.
 func LoadPluginManifest(pluginDir string) (*PluginManifest, error) {
 	candidates := []string{
 		filepath.Join(pluginDir, ".claude-plugin", "plugin.json"),
+		filepath.Join(pluginDir, ".codex-plugin", "plugin.json"),
 		filepath.Join(pluginDir, "plugin.json"),
 	}
 	for _, p := range candidates {

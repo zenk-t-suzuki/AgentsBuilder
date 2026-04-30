@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"agentsbuilder/internal/assetdef"
@@ -25,13 +26,13 @@ type InstallTarget struct {
 // human-readable warnings (e.g. "hooks not supported on Codex"). Errors are
 // returned separately and abort the install.
 type InstallSummary struct {
-	Target    InstallTarget
-	Skills    int
-	Commands  int
-	Agents    int
-	Hooks     int
-	Mcp       int
-	Skipped   []string
+	Target   InstallTarget
+	Skills   int
+	Commands int
+	Agents   int
+	Hooks    int
+	Mcp      int
+	Skipped  []string
 }
 
 // InstallPlugin copies the plugin's components into each target. It returns
@@ -65,7 +66,7 @@ func installTo(p Plugin, t InstallTarget) (InstallSummary, error) {
 		} else {
 			full := filepath.Join(t.BasePath, dst)
 			for _, sk := range p.Skills {
-				name := filepath.Base(sk)
+				name := skillInstallName(p, sk)
 				if err := copyDir(sk, filepath.Join(full, name)); err != nil {
 					return s, fmt.Errorf("copying skill %s: %w", name, err)
 				}
@@ -77,24 +78,29 @@ func installTo(p Plugin, t InstallTarget) (InstallSummary, error) {
 	// Commands → same destination as Skills (Claude Code uses .claude/commands
 	// for both flat command markdowns and skill directories).
 	if len(p.Commands) > 0 {
-		dst := assetdef.DestDir(t.Provider, model.Skills)
-		if dst == "" {
-			s.Skipped = append(s.Skipped, fmt.Sprintf("commands not supported on %s", t.Provider.String()))
+		if t.Provider == model.Codex {
+			s.Skipped = append(s.Skipped, "commands are Claude Code-only and were not copied to Codex skills")
 		} else {
-			full := filepath.Join(t.BasePath, dst)
-			if err := os.MkdirAll(full, 0o755); err != nil {
-				return s, err
-			}
-			for _, c := range p.Commands {
-				if err := copyFile(c, filepath.Join(full, filepath.Base(c))); err != nil {
-					return s, fmt.Errorf("copying command %s: %w", filepath.Base(c), err)
+			dst := assetdef.DestDir(t.Provider, model.Skills)
+			if dst == "" {
+				s.Skipped = append(s.Skipped, fmt.Sprintf("commands not supported on %s", t.Provider.String()))
+			} else {
+				full := filepath.Join(t.BasePath, dst)
+				if err := os.MkdirAll(full, 0o755); err != nil {
+					return s, err
 				}
-				s.Commands++
+				for _, c := range p.Commands {
+					if err := copyFile(c, filepath.Join(full, filepath.Base(c))); err != nil {
+						return s, fmt.Errorf("copying command %s: %w", filepath.Base(c), err)
+					}
+					s.Commands++
+				}
 			}
 		}
 	}
 
-	// Agents → DestDir(provider, scope, Agents). Each agent is a single .md.
+	// Agents → DestDir(provider, scope, Agents). Claude Code uses .md files;
+	// Codex agent roles use .toml files.
 	if len(p.Agents) > 0 {
 		dst := assetdef.DestDir(t.Provider, model.Agents)
 		if dst == "" {
@@ -105,6 +111,12 @@ func installTo(p Plugin, t InstallTarget) (InstallSummary, error) {
 				return s, err
 			}
 			for _, a := range p.Agents {
+				ext := strings.ToLower(filepath.Ext(a))
+				if (t.Provider == model.ClaudeCode && ext != ".md") || (t.Provider == model.Codex && ext != ".toml") {
+					s.Skipped = append(s.Skipped,
+						fmt.Sprintf("agent %s is not a %s agent file", filepath.Base(a), t.Provider.String()))
+					continue
+				}
 				if err := copyFile(a, filepath.Join(full, filepath.Base(a))); err != nil {
 					return s, fmt.Errorf("copying agent %s: %w", filepath.Base(a), err)
 				}
@@ -183,7 +195,140 @@ func installTo(p Plugin, t InstallTarget) (InstallSummary, error) {
 		}
 	}
 
+	if err := enablePluginConfig(p, t); err != nil {
+		return s, err
+	}
+
 	return s, nil
+}
+
+func skillInstallName(p Plugin, skillDir string) string {
+	name := filepath.Base(skillDir)
+	if name == "skills" {
+		if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil && p.Name != "" {
+			return safePathName(p.Name)
+		}
+	}
+	return name
+}
+
+func safePathName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.NewReplacer("/", "-", "\\", "-", " ", "-").Replace(name)
+	if name == "" {
+		return "skill"
+	}
+	return name
+}
+
+func pluginConfigID(p Plugin) string {
+	if p.Name == "" {
+		return ""
+	}
+	if p.Marketplace == "" {
+		return p.Name
+	}
+	return p.Name + "@" + p.Marketplace
+}
+
+func enablePluginConfig(p Plugin, t InstallTarget) error {
+	id := pluginConfigID(p)
+	if id == "" {
+		return nil
+	}
+	switch t.Provider {
+	case model.ClaudeCode:
+		return enableClaudePlugin(filepath.Join(t.BasePath, ".claude", "settings.json"), id)
+	case model.Codex:
+		if t.Scope != model.Global {
+			return nil
+		}
+		return enableCodexPlugin(filepath.Join(t.BasePath, ".codex", "config.toml"), id)
+	default:
+		return nil
+	}
+}
+
+func enableClaudePlugin(target, id string) error {
+	var current map[string]json.RawMessage
+	if data, err := os.ReadFile(target); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		if err := json.Unmarshal(data, &current); err != nil {
+			return fmt.Errorf("parsing target %s: %w", target, err)
+		}
+	}
+	if current == nil {
+		current = make(map[string]json.RawMessage)
+	}
+
+	var enabled map[string]bool
+	if raw, ok := current["enabledPlugins"]; ok {
+		_ = json.Unmarshal(raw, &enabled)
+	}
+	if enabled == nil {
+		enabled = make(map[string]bool)
+	}
+	enabled[id] = true
+
+	raw, err := json.Marshal(enabled)
+	if err != nil {
+		return err
+	}
+	current["enabledPlugins"] = raw
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(current, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(target, append(out, '\n'), 0o644)
+}
+
+func enableCodexPlugin(target, id string) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(target)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	header := "[plugins." + strconv.Quote(id) + "]"
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != header {
+			continue
+		}
+		insertAt := i + 1
+		for j := i + 1; j < len(lines); j++ {
+			trimmed := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				break
+			}
+			insertAt = j + 1
+			if strings.HasPrefix(trimmed, "enabled") {
+				if _, _, ok := strings.Cut(trimmed, "="); ok {
+					lines[j] = "enabled = true"
+					return os.WriteFile(target, []byte(strings.Join(lines, "\n")), 0o644)
+				}
+			}
+		}
+		lines = append(lines[:insertAt], append([]string{"enabled = true"}, lines[insertAt:]...)...)
+		return os.WriteFile(target, []byte(strings.Join(lines, "\n")), 0o644)
+	}
+
+	var b strings.Builder
+	b.WriteString(content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(header)
+	b.WriteString("\n")
+	b.WriteString("enabled = true\n")
+	return os.WriteFile(target, []byte(b.String()), 0o644)
 }
 
 // mergeJSONFile reads snippetPath and merges its top-level keys into target.

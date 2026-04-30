@@ -30,19 +30,19 @@ func PredefinedTemplates() []Template {
 		{
 			Name:        "full-claude",
 			Description: "Full Claude Code setup with all asset types",
-			Assets:      []AssetType{Skills, Agents, MCP, AgentsMD, ClaudeMD},
+			Assets:      []AssetType{Skills, Agents, MCP, Hooks, AgentsMD, ClaudeMD},
 			Providers:   []Provider{ClaudeCode},
 		},
 		{
 			Name:        "full-codex",
 			Description: "Full Codex setup with all asset types",
-			Assets:      []AssetType{Skills, Agents, MCP, AgentsMD, ClaudeMD},
+			Assets:      []AssetType{Skills, Agents, MCP, Hooks, AgentsMD},
 			Providers:   []Provider{Codex},
 		},
 		{
 			Name:        "universal",
 			Description: "All asset types for both Claude Code and Codex",
-			Assets:      []AssetType{Skills, Agents, MCP, AgentsMD, ClaudeMD},
+			Assets:      []AssetType{Skills, Agents, MCP, Hooks, AgentsMD, ClaudeMD},
 			Providers:   []Provider{ClaudeCode, Codex},
 		},
 	}

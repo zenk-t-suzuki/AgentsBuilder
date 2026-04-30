@@ -40,7 +40,7 @@ const (
 type navDir int
 
 const (
-	navLeft  navDir = iota
+	navLeft navDir = iota
 	navRight
 	navUp
 	navDown
@@ -254,8 +254,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ProjectPickerMode = false
 		name := filepath.Base(msg.Path)
 		proj := model.ProjectInfo{Name: name, Path: msg.Path}
-		m.Projects = append(m.Projects, proj)
-		m.Sidebar.Projects = m.Projects
+		if cfg, err := config.Load(); err == nil {
+			if err := cfg.AddProject(name, msg.Path); err == nil {
+				m.Projects = cfg.ListProjects()
+				m.Sidebar.Projects = m.Projects
+			}
+		}
 		return m, func() tea.Msg { return ProjectAddedMsg{Project: proj} }
 
 	case ProjectPickerCancelMsg:
@@ -293,8 +297,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for i, p := range m.Projects {
 			if p.Name == msg.Name {
 				removedSidebarIdx = i + 1 // 0=Global, 1..n=projects
-				m.Projects = append(m.Projects[:i], m.Projects[i+1:]...)
 				break
+			}
+		}
+		if cfg, err := config.Load(); err == nil {
+			if err := cfg.RemoveProject(msg.Name); err == nil {
+				m.Projects = cfg.ListProjects()
 			}
 		}
 		m.Sidebar.Projects = m.Projects

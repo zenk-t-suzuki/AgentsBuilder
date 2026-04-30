@@ -50,8 +50,8 @@ const (
 	Skills   AssetType = iota // Commands/skills directories
 	Agents                    // Subagent definition directories
 	MCP                       // MCP server config (.claude.json / config.toml)
-	Plugins                   // Plugin bundles (settings.json – Claude Code; .tmp/plugins – Codex)
-	Hooks                     // Event hooks (settings.json – Claude Code only)
+	Plugins                   // Plugin enablement settings
+	Hooks                     // Event hooks (settings.json / config.toml)
 	AgentsMD                  // AGENTS.md instruction file
 	ClaudeMD                  // CLAUDE.md memory file (Claude Code only)
 )
@@ -91,17 +91,17 @@ func ParseAssetType(s string) (AssetType, bool) {
 }
 
 var assetTypeNames = map[string]AssetType{
-	"Skills":       Skills,
-	"Agents":       Agents,
-	"CustomAgents": Agents,
+	"Skills":        Skills,
+	"Agents":        Agents,
+	"CustomAgents":  Agents,
 	"Custom Agents": Agents,
-	"MCP":          MCP,
-	"Plugins":      Plugins,
-	"Hooks":        Hooks,
-	"AgentsMD":     AgentsMD,
-	"AGENTS.md":    AgentsMD,
-	"ClaudeMD":     ClaudeMD,
-	"CLAUDE.md":    ClaudeMD,
+	"MCP":           MCP,
+	"Plugins":       Plugins,
+	"Hooks":         Hooks,
+	"AgentsMD":      AgentsMD,
+	"AGENTS.md":     AgentsMD,
+	"ClaudeMD":      ClaudeMD,
+	"CLAUDE.md":     ClaudeMD,
 }
 
 // ParseProvider converts a string to a Provider.
@@ -147,8 +147,8 @@ type ProjectInfo struct {
 // representation never changes. Name is the catalog name read from
 // .claude-plugin/marketplace.json after the first sync.
 type MarketplaceInfo struct {
-	Name   string `json:"name"`             // marketplace.json `name` (kebab-case)
-	Source string `json:"source"`           // raw user input, parsed via marketplace.ParseSource
+	Name   string `json:"name"`   // marketplace.json `name` (kebab-case)
+	Source string `json:"source"` // raw user input, parsed via marketplace.ParseSource
 }
 
 // DiffResult captures the diff/priority relationship between global and project assets.
@@ -161,4 +161,5 @@ type DiffResult struct {
 	ProjectExists bool
 	Priority      Scope // which scope takes precedence
 	HasDiff       bool  // true when both exist (potential override)
+	ItemConflicts []string
 }

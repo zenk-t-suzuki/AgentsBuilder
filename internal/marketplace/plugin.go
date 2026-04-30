@@ -33,11 +33,11 @@ type Plugin struct {
 	UnresolvedReason string
 
 	// Discovered component locations (absolute paths under Dir).
-	Skills     []string // skill dirs (each contains SKILL.md)
-	Commands   []string // *.md files
-	Agents     []string // *.md files
-	HookFiles  []string // *.json files under hooks/ (or single configured file)
-	McpFiles   []string // *.json files under mcp/ (or single configured file)
+	Skills    []string // skill dirs (each contains SKILL.md)
+	Commands  []string // *.md files
+	Agents    []string // *.md files
+	HookFiles []string // *.json files under hooks/ (or single configured file)
+	McpFiles  []string // *.json files under mcp/ (or single configured file)
 }
 
 // LoadMarketplace reads marketplace.json from `manifestPath` (which can be
@@ -241,10 +241,14 @@ func discoverComponents(p *Plugin, pm *PluginManifest) {
 		}
 	}
 
-	p.Skills = listSubdirsContaining(skillsDir, "SKILL.md")
+	p.Skills = collectSkillDirs(skillsDir)
 	p.Commands = listFilesWithExt(filepath.Join(p.Dir, "commands"), ".md")
-	p.Agents = listFilesWithExt(filepath.Join(p.Dir, "agents"), ".md")
+	p.Agents = append(listFilesWithExt(filepath.Join(p.Dir, "agents"), ".md"),
+		listFilesWithExt(filepath.Join(p.Dir, "agents"), ".toml")...)
 	p.McpFiles = collectJSONOrDir(mcpDir)
+	if len(p.McpFiles) == 0 {
+		p.McpFiles = collectJSONOrDir(filepath.Join(p.Dir, ".mcp.json"))
+	}
 
 	// Hooks: Codex's plugin.json may declare a string path to a single hooks
 	// file (or, less commonly, an inline object/array — those are skipped here
@@ -261,6 +265,16 @@ func discoverComponents(p *Plugin, pm *PluginManifest) {
 	if p.HookFiles == nil {
 		p.HookFiles = listFilesWithExt(hooksDir, ".json")
 	}
+}
+
+// collectSkillDirs returns installable skill package directories. Codex plugin
+// manifests can point `skills` at a directory that itself contains SKILL.md;
+// Claude-style marketplaces usually put one skill package per child directory.
+func collectSkillDirs(root string) []string {
+	if _, err := os.Stat(filepath.Join(root, "SKILL.md")); err == nil {
+		return []string{root}
+	}
+	return listSubdirsContaining(root, "SKILL.md")
 }
 
 // collectJSONOrDir returns the absolute paths of all .json files under root

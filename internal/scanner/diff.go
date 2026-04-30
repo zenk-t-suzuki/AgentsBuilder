@@ -1,6 +1,8 @@
 package scanner
 
 import (
+	"sort"
+
 	"agentsbuilder/internal/model"
 )
 
@@ -32,6 +34,7 @@ func ComputeDiffs(global []model.Asset, project []model.Asset) []model.DiffResul
 				ProjectExists: proj.Exists,
 			}
 			result.HasDiff = result.GlobalExists && result.ProjectExists
+			result.ItemConflicts = sharedItemNames(g.Items, proj.Items)
 			if result.GlobalExists && !result.ProjectExists {
 				result.Priority = model.Global
 			}
@@ -51,4 +54,27 @@ func indexByTypeProvider(assets []model.Asset) map[assetKey]model.Asset {
 		}
 	}
 	return m
+}
+
+func sharedItemNames(global, project []model.AssetItem) []string {
+	if len(global) == 0 || len(project) == 0 {
+		return nil
+	}
+	names := make(map[string]bool, len(global))
+	for _, item := range global {
+		if item.Name != "" {
+			names[item.Name] = true
+		}
+	}
+	var shared []string
+	seen := make(map[string]bool)
+	for _, item := range project {
+		if item.Name == "" || !names[item.Name] || seen[item.Name] {
+			continue
+		}
+		seen[item.Name] = true
+		shared = append(shared, item.Name)
+	}
+	sort.Strings(shared)
+	return shared
 }

@@ -22,6 +22,9 @@ const (
 	EmbeddedTOML
 	// SingleFile means the asset is one standalone file with no sub-items.
 	SingleFile
+	// CodexAgentRoles means Codex agent roles discovered from both
+	// .codex/config.toml [agents.roles.<name>] and .codex/agents/*.toml.
+	CodexAgentRoles
 )
 
 // ConfigKey describes how to extract items from an embedded config file.
@@ -52,17 +55,19 @@ type AssetDef struct {
 }
 
 // IsFile returns true when the asset is a file (not a directory listing).
-func (d AssetDef) IsFile() bool { return d.Storage != DirListing }
+func (d AssetDef) IsFile() bool {
+	return d.Storage != DirListing && d.Storage != CodexAgentRoles
+}
 
 // IsEmbedded returns true when individual items live inside a shared config file.
 func (d AssetDef) IsEmbedded() bool {
-	return d.Storage == EmbeddedJSON || d.Storage == EmbeddedTOML
+	return d.Storage == EmbeddedJSON || d.Storage == EmbeddedTOML || d.Storage == CodexAgentRoles
 }
 
 // ParentDir returns the directory portion of PrimaryPath, suitable for
 // os.MkdirAll. For DirListing assets it returns PrimaryPath itself.
 func (d AssetDef) ParentDir() string {
-	if d.Storage == DirListing {
+	if d.Storage == DirListing || d.Storage == CodexAgentRoles {
 		return d.PrimaryPath
 	}
 	dir := filepath.Dir(d.PrimaryPath)
@@ -114,11 +119,14 @@ var allDefs = []AssetDef{
 
 	// ── Codex / Global ──
 	// Paths verified against openai/codex Rust source (2026-04 snapshot):
-	//   - codex-rs/core-skills/src/loader.rs   (.agents/skills, $HOME/.agents/skills)
+	//   - codex-rs/core-skills/src/loader.rs   ($CODEX_HOME/skills, $HOME/.agents/skills)
 	//   - codex-rs/config/src/config_toml.rs   ([mcp_servers], [hooks], [plugins], etc.)
+	//   - codex-rs/core/src/config/agent_roles.rs ([agents.roles], .codex/agents)
 	//   - codex-rs/core/src/agents_md.rs       (AGENTS.override.md > AGENTS.md priority)
 	{model.Skills, model.Codex, model.Global, DirListing,
-		[]string{".agents/skills"}, ".agents/skills", nil},
+		[]string{".agents/skills", ".codex/skills"}, ".agents/skills", nil},
+	{model.Agents, model.Codex, model.Global, CodexAgentRoles,
+		[]string{".codex/agents", ".codex/config.toml"}, ".codex/agents", nil},
 	{model.MCP, model.Codex, model.Global, EmbeddedTOML,
 		[]string{".codex/config.toml"}, ".codex/config.toml",
 		&ConfigKey{TOMLPrefix: "mcp_servers"}},
@@ -132,11 +140,19 @@ var allDefs = []AssetDef{
 		[]string{".codex/AGENTS.override.md", ".codex/AGENTS.md"}, ".codex/AGENTS.md", nil},
 
 	// ── Codex / Project ──
-	// Codex's config.toml is global-only — there is no project-level config,
-	// so MCP/Hooks/Plugins do not appear here. Skills and AGENTS.md walk the
-	// repo from project root downward.
+	// Codex loads project-local config layers from .codex/config.toml between
+	// the project root and cwd when the project is trusted. Plugins remain
+	// user-config only; project [plugins] entries are ignored by Codex.
 	{model.Skills, model.Codex, model.Project, DirListing,
 		[]string{".agents/skills"}, ".agents/skills", nil},
+	{model.Agents, model.Codex, model.Project, CodexAgentRoles,
+		[]string{".codex/agents", ".codex/config.toml"}, ".codex/agents", nil},
+	{model.MCP, model.Codex, model.Project, EmbeddedTOML,
+		[]string{".codex/config.toml"}, ".codex/config.toml",
+		&ConfigKey{TOMLPrefix: "mcp_servers"}},
+	{model.Hooks, model.Codex, model.Project, EmbeddedTOML,
+		[]string{".codex/config.toml"}, ".codex/config.toml",
+		&ConfigKey{TOMLPrefix: "hooks"}},
 	{model.AgentsMD, model.Codex, model.Project, SingleFile,
 		[]string{"AGENTS.override.md", "AGENTS.md"}, "AGENTS.md", nil},
 }
