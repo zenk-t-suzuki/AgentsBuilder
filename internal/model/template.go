@@ -2,12 +2,13 @@ package model
 
 // Template defines a reusable asset directory structure template.
 type Template struct {
-	Name        string
-	Description string
-	Assets      []AssetType
-	Providers   []Provider
-	UserDefined bool   // true for templates loaded from ~/.agentsbuilder/templates/
-	TemplateDir string // absolute path to the template directory; non-empty for user-defined templates with files
+	Name         string
+	Description  string
+	Assets       []AssetType
+	Providers    []Provider
+	UserDefined  bool   // true for templates loaded from ~/.agentsbuilder/templates/
+	TemplateDir  string // absolute path to the template directory; non-empty for user-defined templates with files
+	RegistryName string // non-empty when loaded from a shared registry
 }
 
 // PredefinedTemplates returns the built-in templates available in MVP.

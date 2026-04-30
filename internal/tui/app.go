@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
+	"agentsbuilder/internal/registry"
 	"agentsbuilder/internal/scanner"
 	tmplpkg "agentsbuilder/internal/template"
 
@@ -29,7 +31,7 @@ type focusElem int
 const (
 	elemNone       focusElem = iota
 	elemSidebar              // sidebar (scope/project list)
-	elemModeTabs             // outer mode tab bar (Browse/Template/Marketplace)
+	elemModeTabs             // outer mode tab bar (Browse/Template/Registry)
 	elemBrowseTabs           // inner Browse tab bar (All/Skills/Agents/…)
 	elemList                 // main content list / template UI / marketplace
 )
@@ -64,6 +66,9 @@ type AppModel struct {
 	prevMainElem   focusElem // remembered main-pane element for sidebar return
 	TemplateUI     TemplateUIModel
 
+	// Registry management
+	RegistryUI RegistryUIModel
+
 	// Template creation wizard
 	TemplateCreating    bool
 	TmplStep            TemplateCreateStep
@@ -87,7 +92,7 @@ type AppModel struct {
 }
 
 // NewAppModel creates a new root application model.
-func NewAppModel(projects []model.ProjectInfo) AppModel {
+func NewAppModel(projects []model.ProjectInfo, registries []model.RegistryInfo) AppModel {
 	m := AppModel{
 		ActivePane:  SidebarPane,
 		ActiveScope: model.Global,
@@ -97,7 +102,8 @@ func NewAppModel(projects []model.ProjectInfo) AppModel {
 	m.Sidebar = NewSidebarModel(projects)
 	m.MainArea = NewMainAreaModel()
 	m.DetailPanel = NewDetailModel()
-	m.TemplateUI = NewTemplateUIModel()
+	m.TemplateUI = NewTemplateUIModel(registries)
+	m.RegistryUI = NewRegistryUIModel(registries)
 	return m
 }
 
@@ -145,6 +151,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ProjectPickerMode {
 			var cmd tea.Cmd
 			m.ProjectPicker, cmd = m.ProjectPicker.Update(msg)
+			return m, cmd
+		}
+
+		// Registry URL input, delete confirmation, or publish picker captures all input
+		if m.ActiveMainMode == ModeRegistry && (m.RegistryUI.InputMode != RegistryBrowse || m.RegistryUI.DeleteConfirm) {
+			var cmd tea.Cmd
+			m.RegistryUI, cmd = m.RegistryUI.Update(msg)
 			return m, cmd
 		}
 
@@ -234,7 +247,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.switchToTemplate()
 			return m, nil
 		case "3":
-			m.ActiveMainMode = ModeMarketplace
+			m.ActiveMainMode = ModeRegistry
 			return m, nil
 		}
 
@@ -272,8 +285,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.TemplateUI, cmd = m.TemplateUI.Update(msg)
 			return m, cmd
 		}
-		if m.ActiveMainMode == ModeMarketplace {
-			return m, nil
+		if m.ActiveMainMode == ModeRegistry {
+			var cmd tea.Cmd
+			m.RegistryUI, cmd = m.RegistryUI.Update(msg)
+			return m, cmd
 		}
 
 		// Browse mode: delegate remaining keys to MainArea
@@ -376,6 +391,112 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = tmplpkg.ApplyTemplate(msg.Template, targetPath, m.ActiveScope)
 		}
 		return m, func() tea.Msg { return RefreshMsg{} }
+
+	case RegistryAddedMsg:
+		cfg, err := config.Load()
+		if err == nil {
+			if addErr := cfg.AddRegistry(msg.Name, msg.URL); addErr == nil {
+				m.RegistryUI.Registries = cfg.ListRegistries()
+				m.RegistryUI.Syncing = true
+				m.RegistryUI.SyncOK = false
+				// Sync the newly added registry in background
+				return m, func() tea.Msg {
+					reg := model.RegistryInfo{Name: msg.Name, URL: msg.URL}
+					_, syncErr := registry.Sync(reg)
+					errs := map[string]error{}
+					if syncErr != nil {
+						errs[msg.Name] = syncErr
+					}
+					return RegistrySyncDoneMsg{Errors: errs}
+				}
+			}
+		}
+		return m, nil
+
+	case RegistryRemovedMsg:
+		cfg, err := config.Load()
+		if err == nil {
+			if rmErr := cfg.RemoveRegistry(msg.Name); rmErr == nil {
+				_ = registry.RemoveCache(msg.Name)
+				m.RegistryUI.Registries = cfg.ListRegistries()
+				if m.RegistryUI.Cursor >= len(m.RegistryUI.Registries) && m.RegistryUI.Cursor > 0 {
+					m.RegistryUI.Cursor--
+				}
+			}
+		}
+		return m, nil
+
+	case RegistrySyncMsg:
+		m.RegistryUI.Syncing = true
+		m.RegistryUI.SyncErrors = nil
+		regs := m.RegistryUI.Registries
+		syncName := msg.Name
+		return m, func() tea.Msg {
+			var targets []model.RegistryInfo
+			if syncName == "" {
+				targets = regs
+			} else {
+				for _, r := range regs {
+					if r.Name == syncName {
+						targets = append(targets, r)
+						break
+					}
+				}
+			}
+			errs := registry.SyncAll(targets)
+			return RegistrySyncDoneMsg{Errors: errs}
+		}
+
+	case RegistrySyncDoneMsg:
+		m.RegistryUI.Syncing = false
+		if len(msg.Errors) > 0 {
+			m.RegistryUI.SyncErrors = msg.Errors
+			m.RegistryUI.SyncOK = false
+		} else {
+			m.RegistryUI.SyncErrors = nil
+			m.RegistryUI.SyncOK = true
+		}
+		// Reload template UI to pick up new registry templates
+		m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
+		m.TemplateUI.Width = m.mainAreaWidth()
+		m.TemplateUI.Height = m.mainAreaHeight()
+		return m, nil
+
+	case RegistryPublishMsg:
+		m.RegistryUI.Publishing = true
+		m.RegistryUI.PublishErr = ""
+		m.RegistryUI.PublishOK = ""
+		regName := msg.RegistryName
+		tmplName := msg.TemplateName
+		tmplDir := msg.TemplateDir
+		regs := m.RegistryUI.Registries
+		return m, func() tea.Msg {
+			var reg model.RegistryInfo
+			for _, r := range regs {
+				if r.Name == regName {
+					reg = r
+					break
+				}
+			}
+			err := registry.PublishTemplate(reg, tmplName, tmplDir)
+			return RegistryPublishDoneMsg{TemplateName: tmplName, Err: err}
+		}
+
+	case RegistryPublishDoneMsg:
+		m.RegistryUI.Publishing = false
+		if msg.Err != nil {
+			m.RegistryUI.PublishErr = msg.Err.Error()
+			m.RegistryUI.PublishOK = ""
+		} else {
+			m.RegistryUI.PublishErr = ""
+			m.RegistryUI.PublishOK = fmt.Sprintf(
+				"テンプレート \"%s\" をアップロードしました", msg.TemplateName)
+			// Reload template UI to pick up the published template
+			m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
+			m.TemplateUI.Width = m.mainAreaWidth()
+			m.TemplateUI.Height = m.mainAreaHeight()
+		}
+		return m, nil
 
 	case RefreshMsg:
 		globalAssets := scanner.ScanAllGlobal()
@@ -502,8 +623,8 @@ func (m AppModel) View() string {
 		}
 	case ModeTemplate:
 		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.TemplateUI.View()
-	case ModeMarketplace:
-		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.renderMarketplace()
+	case ModeRegistry:
+		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.RegistryUI.View()
 	}
 
 	mainBox := m.mainBorder().
@@ -626,31 +747,10 @@ func (m *AppModel) updateLayout() {
 	m.pickerDimensions()
 }
 
-// renderMarketplace renders the Marketplace mode panel.
-// skillsmp.com has no public API (all endpoints return 403), so we display
-// the URL for the user to visit in a browser.
-func (m AppModel) renderMarketplace() string {
-	var b strings.Builder
-	b.WriteString(TitleStyle.Render("Marketplace"))
-	b.WriteString("\n\n")
-	b.WriteString(NormalStyle.Render("  Skills Marketplace — skillsmp.com"))
-	b.WriteString("\n\n")
-	b.WriteString(DimStyle.Render("  No public API is available for in-TUI browsing."))
-	b.WriteString("\n")
-	b.WriteString(DimStyle.Render("  Visit the site directly in your browser:"))
-	b.WriteString("\n\n")
-	b.WriteString(lipgloss.NewStyle().Foreground(PrimaryColor).Bold(true).Render("  https://skillsmp.com/"))
-	b.WriteString("\n\n")
-	b.WriteString(DimStyle.Render("  Browse and discover community-contributed skills and agents for"))
-	b.WriteString("\n")
-	b.WriteString(DimStyle.Render("  Claude Code and Codex at the URL above."))
-	return b.String()
-}
-
 // switchToTemplate initialises and activates the template mode.
 func (m *AppModel) switchToTemplate() {
 	m.ActiveMainMode = ModeTemplate
-	m.TemplateUI = NewTemplateUIModel()
+	m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
 	m.TemplateUI.Width = m.mainAreaWidth()
 	m.TemplateUI.Height = m.mainAreaHeight()
 }
@@ -797,7 +897,7 @@ func (m AppModel) updateTmplName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.stopTmplCreate()
 		// Reload template UI so the new template appears immediately.
-		m.TemplateUI = NewTemplateUIModel()
+		m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
 		return m, func() tea.Msg { return RefreshMsg{} }
 	default:
 		m.TmplSaveErr = "" // clear error on any key press
@@ -1004,7 +1104,7 @@ func (m AppModel) navAtEdge(dir navDir) bool {
 			return true // left→Sidebar; right→nothing (clamp)
 		case navUp:
 			switch m.ActiveMainMode {
-			case ModeMarketplace:
+			case ModeRegistry:
 				return true
 			case ModeTemplate:
 				return m.TemplateUI.Step == StepSelectTemplate && m.TemplateUI.Cursor == 0

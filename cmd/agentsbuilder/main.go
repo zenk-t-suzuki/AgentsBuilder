@@ -37,7 +37,7 @@ func main() {
 	// Errors are non-fatal; built-in predefined templates always work.
 	_ = template.EnsureDefaultTemplate()
 
-	appModel := tui.NewAppModel(cfg.ListProjects())
+	appModel := tui.NewAppModel(cfg.ListProjects(), cfg.ListRegistries())
 	p := tea.NewProgram(appModel, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

@@ -12,9 +12,10 @@ import (
 
 // AppConfig holds the persisted application configuration.
 type AppConfig struct {
-	Projects       []model.ProjectInfo `json:"projects"`
-	ActiveProject  string              `json:"active_project"`
-	ActiveProvider model.Provider      `json:"active_provider"`
+	Projects       []model.ProjectInfo  `json:"projects"`
+	ActiveProject  string               `json:"active_project"`
+	ActiveProvider model.Provider       `json:"active_provider"`
+	Registries     []model.RegistryInfo `json:"registries,omitempty"`
 }
 
 // configDir returns the path to the application config directory (~/.agentsbuilder/).
@@ -34,6 +35,16 @@ func TemplatesDir() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "templates"), nil
+}
+
+// RegistryCacheDir returns the path to the registry cache directory
+// (~/.agentsbuilder/cache/registries/).
+func RegistryCacheDir() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "cache", "registries"), nil
 }
 
 // ConfigPath returns the full path to the config file (~/.agentsbuilder/config.json).
@@ -174,6 +185,46 @@ func (c *AppConfig) GetActiveProject() *model.ProjectInfo {
 		}
 	}
 	return nil
+}
+
+// AddRegistry registers a new Git repository as a template registry.
+func (c *AppConfig) AddRegistry(name, url string) error {
+	if name == "" {
+		return errors.New("registry name cannot be empty")
+	}
+	if url == "" {
+		return errors.New("registry URL cannot be empty")
+	}
+	for _, r := range c.Registries {
+		if r.Name == name {
+			return fmt.Errorf("registry %q already exists", name)
+		}
+	}
+	c.Registries = append(c.Registries, model.RegistryInfo{Name: name, URL: url})
+	return c.Save()
+}
+
+// RemoveRegistry unregisters a registry by name.
+func (c *AppConfig) RemoveRegistry(name string) error {
+	idx := -1
+	for i, r := range c.Registries {
+		if r.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("registry %q not found", name)
+	}
+	c.Registries = append(c.Registries[:idx], c.Registries[idx+1:]...)
+	return c.Save()
+}
+
+// ListRegistries returns all registered registries.
+func (c *AppConfig) ListRegistries() []model.RegistryInfo {
+	result := make([]model.RegistryInfo, len(c.Registries))
+	copy(result, c.Registries)
+	return result
 }
 
 func defaultConfig() *AppConfig {

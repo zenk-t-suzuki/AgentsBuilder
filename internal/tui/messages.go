@@ -54,3 +54,40 @@ type EnterTemplateModeMsg struct{}
 
 // ExitTemplateMode returns from template creation to normal browsing.
 type ExitTemplateModeMsg struct{}
+
+// RegistryAddedMsg is sent when a new registry is registered.
+type RegistryAddedMsg struct {
+	Name string
+	URL  string
+}
+
+// RegistryRemovedMsg is sent when a registry is removed.
+type RegistryRemovedMsg struct {
+	Name string
+}
+
+// RegistrySyncMsg triggers a sync (git pull) for a registry or all registries.
+type RegistrySyncMsg struct {
+	Name string // empty = sync all
+}
+
+// RegistrySyncDoneMsg is sent after sync completes.
+type RegistrySyncDoneMsg struct {
+	Errors map[string]error
+}
+
+// RegistrySyncStartMsg notifies the UI that sync has started.
+type RegistrySyncStartMsg struct{}
+
+// RegistryPublishMsg triggers publishing a local template to a registry.
+type RegistryPublishMsg struct {
+	RegistryName string
+	TemplateName string
+	TemplateDir  string
+}
+
+// RegistryPublishDoneMsg is sent after publish completes.
+type RegistryPublishDoneMsg struct {
+	TemplateName string
+	Err          error
+}

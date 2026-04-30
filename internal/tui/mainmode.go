@@ -4,12 +4,12 @@ package tui
 type MainMode int
 
 const (
-	ModeBrowse      MainMode = iota // 1: browse assets
-	ModeTemplate                    // 2: apply a template
-	ModeMarketplace                 // 3: marketplace
+	ModeBrowse   MainMode = iota // 1: browse assets
+	ModeTemplate                 // 2: apply a template
+	ModeRegistry                 // 3: shared template registries
 )
 
-var allMainModes = []MainMode{ModeBrowse, ModeTemplate, ModeMarketplace}
+var allMainModes = []MainMode{ModeBrowse, ModeTemplate, ModeRegistry}
 
 // Label returns the display label for the mode.
 func (m MainMode) Label() string {
@@ -18,8 +18,8 @@ func (m MainMode) Label() string {
 		return "Browse"
 	case ModeTemplate:
 		return "Template"
-	case ModeMarketplace:
-		return "Marketplace"
+	case ModeRegistry:
+		return "Registry"
 	default:
 		return ""
 	}

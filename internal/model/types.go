@@ -91,17 +91,17 @@ func ParseAssetType(s string) (AssetType, bool) {
 }
 
 var assetTypeNames = map[string]AssetType{
-	"Skills":        Skills,
-	"Agents":        Agents,
-	"CustomAgents":  Agents,
+	"Skills":       Skills,
+	"Agents":       Agents,
+	"CustomAgents": Agents,
 	"Custom Agents": Agents,
-	"MCP":           MCP,
-	"Plugins":       Plugins,
-	"Hooks":         Hooks,
-	"AgentsMD":      AgentsMD,
-	"AGENTS.md":     AgentsMD,
-	"ClaudeMD":      ClaudeMD,
-	"CLAUDE.md":     ClaudeMD,
+	"MCP":          MCP,
+	"Plugins":      Plugins,
+	"Hooks":        Hooks,
+	"AgentsMD":     AgentsMD,
+	"AGENTS.md":    AgentsMD,
+	"ClaudeMD":     ClaudeMD,
+	"CLAUDE.md":    ClaudeMD,
 }
 
 // ParseProvider converts a string to a Provider.
@@ -139,6 +139,12 @@ type Asset struct {
 type ProjectInfo struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
+}
+
+// RegistryInfo holds a registered Git repository used as a shared template registry.
+type RegistryInfo struct {
+	Name string `json:"name"` // display name (derived from URL if not specified)
+	URL  string `json:"url"`  // Git clone URL (HTTPS or SSH)
 }
 
 // DiffResult captures the diff/priority relationship between global and project assets.

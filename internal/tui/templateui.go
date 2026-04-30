@@ -6,6 +6,7 @@ import (
 
 	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
+	"agentsbuilder/internal/registry"
 	tmplpkg "agentsbuilder/internal/template"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -41,14 +42,17 @@ type TemplateUIModel struct {
 
 // NewTemplateUIModel creates a new template UI model.
 // It loads built-in predefined templates first, then appends any user-defined
-// templates discovered in ~/.agentsbuilder/templates/.
-func NewTemplateUIModel() TemplateUIModel {
+// templates discovered in ~/.agentsbuilder/templates/, and finally appends
+// templates from registered Git registries.
+func NewTemplateUIModel(registries []model.RegistryInfo) TemplateUIModel {
 	predefined := model.PredefinedTemplates()
 	user := tmplpkg.LoadUserTemplates()
+	remote := registry.LoadAllTemplates(registries)
 
-	templates := make([]model.Template, 0, len(predefined)+len(user))
+	templates := make([]model.Template, 0, len(predefined)+len(user)+len(remote))
 	templates = append(templates, predefined...)
 	templates = append(templates, user...)
+	templates = append(templates, remote...)
 
 	templatesPath, _ := config.TemplatesDir()
 
@@ -209,13 +213,19 @@ func (m TemplateUIModel) View() string {
 		b.WriteString("\n\n")
 		for i, t := range m.Templates {
 			marker := "  "
-			if t.UserDefined {
+			if t.RegistryName != "" {
+				marker = "◆ "
+			} else if t.UserDefined {
 				marker = "★ "
 			}
+			label := t.Name
+			if t.RegistryName != "" {
+				label = fmt.Sprintf("%s (%s)", t.Name, t.RegistryName)
+			}
 			if i == m.Cursor {
-				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s%s", marker, t.Name)))
+				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s%s", marker, label)))
 			} else {
-				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s%s", marker, t.Name)))
+				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s%s", marker, label)))
 			}
 			b.WriteString("\n")
 			if t.Description != "" {
@@ -229,7 +239,7 @@ func (m TemplateUIModel) View() string {
 			b.WriteString("\n\n")
 			b.WriteString(DimStyle.Render(fmt.Sprintf("  ★ user templates: %s", m.TemplatesPath)))
 			b.WriteString("\n")
-			b.WriteString(DimStyle.Render("    Add <name>/template.json to create a custom template."))
+			b.WriteString(DimStyle.Render("  ◆ registry templates: [3] Registry タブで管理"))
 		}
 
 	case StepConfigure:
