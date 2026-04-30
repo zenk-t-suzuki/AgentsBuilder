@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"agentsbuilder/internal/config"
-	"agentsbuilder/internal/template"
+	"agentsbuilder/internal/marketplace"
 	"agentsbuilder/internal/tui"
 	"agentsbuilder/internal/updater"
 
@@ -33,11 +33,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure ~/.agentsbuilder/templates/*default/template.json exists on first run.
-	// Errors are non-fatal; built-in predefined templates always work.
-	_ = template.EnsureDefaultTemplate()
+	// Configure the marketplace cache directory before any sync runs.
+	if cacheDir, err := config.MarketplaceCacheDir(); err == nil {
+		marketplace.SetCacheRoot(cacheDir)
+	}
 
-	appModel := tui.NewAppModel(cfg.ListProjects(), cfg.ListRegistries())
+	appModel := tui.NewAppModel(cfg.ListProjects(), cfg.ListMarketplaces())
 	p := tea.NewProgram(appModel, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

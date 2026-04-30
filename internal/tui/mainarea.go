@@ -74,10 +74,6 @@ type MainAreaModel struct {
 	SelectedAssetIndex int // index into the flat selectables list
 	ActiveBrowseTab    int // index into allBrowseTabs()
 
-	// Template creation mode: when true each item shows a checkbox.
-	TemplateCreating    bool
-	TemplateSelPaths    map[string]bool // set of selected source file paths
-
 	keys KeyMap
 }
 
@@ -396,35 +392,15 @@ func (m MainAreaModel) buildLines() []assetLine {
 					isSelected := dispIdx == m.SelectedAssetIndex && m.Focused && !m.TabFocused
 
 					var rendered string
-					if m.TemplateCreating {
-						checked := m.TemplateSelPaths[TmplSelectKey(asset.Type, asset.Provider, item.FilePath, item.Name)]
-						checkPlain := "[ ]"
-						checkStyled := UncheckedStyle
-						if checked {
-							checkPlain = "[x]"
-							checkStyled = CheckedStyle
-						}
-						visibleLeft := fmt.Sprintf("    %s %s", checkPlain, item.Name)
-						if isSelected {
-							line := fmt.Sprintf("    %s %s", checkPlain, item.Name) +
-								m.providerLabelPlain(asset.Provider, len(visibleLeft))
-							rendered = m.renderSelectedRow("> " + line)
-						} else {
-							line := fmt.Sprintf("    %s %s", checkStyled, item.Name) +
-								m.providerLabel(asset.Provider, len(visibleLeft))
-							rendered = NormalStyle.Render("  " + line)
-						}
+					visibleLeft := fmt.Sprintf("    . %s", item.Name)
+					if isSelected {
+						line := fmt.Sprintf("    ● %s", item.Name) +
+							m.providerLabelPlain(asset.Provider, len(visibleLeft))
+						rendered = m.renderSelectedRow("> " + line)
 					} else {
-						visibleLeft := fmt.Sprintf("    . %s", item.Name)
-						if isSelected {
-							line := fmt.Sprintf("    ● %s", item.Name) +
-								m.providerLabelPlain(asset.Provider, len(visibleLeft))
-							rendered = m.renderSelectedRow("> " + line)
-						} else {
-							line := fmt.Sprintf("    %s %s", ActiveIndicator, item.Name) +
-								m.providerLabel(asset.Provider, len(visibleLeft))
-							rendered = NormalStyle.Render("  " + line)
-						}
+						line := fmt.Sprintf("    %s %s", ActiveIndicator, item.Name) +
+							m.providerLabel(asset.Provider, len(visibleLeft))
+						rendered = NormalStyle.Render("  " + line)
 					}
 					lines = append(lines, assetLine{text: rendered, assetIdx: dispIdx})
 				}
@@ -445,35 +421,15 @@ func (m MainAreaModel) buildLines() []assetLine {
 				}
 
 				var rendered string
-				if m.TemplateCreating {
-					checked := m.TemplateSelPaths[asset.FilePath]
-					checkPlain := "[ ]"
-					checkStyled := UncheckedStyle
-					if checked {
-						checkPlain = "[x]"
-						checkStyled = CheckedStyle
-					}
-					visibleLeft := fmt.Sprintf("    %s %s%s", checkPlain, diffMarkPlain, asset.FilePath)
-					if isSelected {
-						line := fmt.Sprintf("    %s %s%s", checkPlain, diffMarkPlain, asset.FilePath) +
-							m.providerLabelPlain(asset.Provider, len(visibleLeft))
-						rendered = m.renderSelectedRow("> " + line)
-					} else {
-						line := fmt.Sprintf("    %s %s%s", checkStyled, diffMarkStyled, asset.FilePath) +
-							m.providerLabel(asset.Provider, len(visibleLeft))
-						rendered = NormalStyle.Render("  " + line)
-					}
+				visibleLeft := fmt.Sprintf("    . %s%s", diffMarkPlain, asset.FilePath)
+				if isSelected {
+					line := fmt.Sprintf("    ● %s%s", diffMarkPlain, asset.FilePath) +
+						m.providerLabelPlain(asset.Provider, len(visibleLeft))
+					rendered = m.renderSelectedRow("> " + line)
 				} else {
-					visibleLeft := fmt.Sprintf("    . %s%s", diffMarkPlain, asset.FilePath)
-					if isSelected {
-						line := fmt.Sprintf("    ● %s%s", diffMarkPlain, asset.FilePath) +
-							m.providerLabelPlain(asset.Provider, len(visibleLeft))
-						rendered = m.renderSelectedRow("> " + line)
-					} else {
-						line := fmt.Sprintf("    %s %s%s", ActiveIndicator, diffMarkStyled, asset.FilePath) +
-							m.providerLabel(asset.Provider, len(visibleLeft))
-						rendered = NormalStyle.Render("  " + line)
-					}
+					line := fmt.Sprintf("    %s %s%s", ActiveIndicator, diffMarkStyled, asset.FilePath) +
+						m.providerLabel(asset.Provider, len(visibleLeft))
+					rendered = NormalStyle.Render("  " + line)
 				}
 				lines = append(lines, assetLine{text: rendered, assetIdx: dispIdx})
 			}
@@ -536,11 +492,7 @@ func (m MainAreaModel) View() string {
 	}
 
 	// Subtract the inner tab bar (2 lines) + its trailing newline (1 line).
-	// In template creation mode an extra hint line is shown below the tab bar.
 	visible := m.Height - 3
-	if m.TemplateCreating {
-		visible--
-	}
 	if visible <= 0 {
 		visible = 4
 	}
@@ -585,11 +537,5 @@ func (m MainAreaModel) View() string {
 		}
 	}
 
-	// Template creation mode: show selection count below the tab bar.
-	if m.TemplateCreating {
-		count := len(m.TemplateSelPaths)
-		hint := DimStyle.Render(fmt.Sprintf("  space:select · enter:review (%d selected) · esc:cancel", count))
-		return innerTabBar + "\n" + hint + "\n" + b.String()
-	}
 	return innerTabBar + "\n" + b.String()
 }

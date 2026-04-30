@@ -1,14 +1,15 @@
 package model
 
-// Template defines a reusable asset directory structure template.
+// Template defines a built-in directory scaffold that a user can apply to a
+// project to create the standard asset directory structure for a given
+// provider/asset combination. Templates are predefined only — user-defined
+// templates have been replaced by the Claude Code-compatible marketplace
+// plugin system (see internal/marketplace).
 type Template struct {
-	Name         string
-	Description  string
-	Assets       []AssetType
-	Providers    []Provider
-	UserDefined  bool   // true for templates loaded from ~/.agentsbuilder/templates/
-	TemplateDir  string // absolute path to the template directory; non-empty for user-defined templates with files
-	RegistryName string // non-empty when loaded from a shared registry
+	Name        string
+	Description string
+	Assets      []AssetType
+	Providers   []Provider
 }
 
 // PredefinedTemplates returns the built-in templates available in MVP.

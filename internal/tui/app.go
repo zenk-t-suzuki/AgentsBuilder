@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"agentsbuilder/internal/config"
+	"agentsbuilder/internal/marketplace"
 	"agentsbuilder/internal/model"
-	"agentsbuilder/internal/registry"
 	"agentsbuilder/internal/scanner"
 	tmplpkg "agentsbuilder/internal/template"
 
@@ -31,7 +31,7 @@ type focusElem int
 const (
 	elemNone       focusElem = iota
 	elemSidebar              // sidebar (scope/project list)
-	elemModeTabs             // outer mode tab bar (Browse/Template/Registry)
+	elemModeTabs             // outer mode tab bar (Browse/Template/Marketplace)
 	elemBrowseTabs           // inner Browse tab bar (All/Skills/Agents/…)
 	elemList                 // main content list / template UI / marketplace
 )
@@ -64,19 +64,10 @@ type AppModel struct {
 	ActiveMainMode MainMode
 	AppTabFocused  bool      // true when keyboard cursor is in the outer mode tab bar
 	prevMainElem   focusElem // remembered main-pane element for sidebar return
-	TemplateUI     TemplateUIModel
 
-	// Registry management
-	RegistryUI RegistryUIModel
-
-	// Template creation wizard
-	TemplateCreating    bool
-	TmplStep            TemplateCreateStep
-	TmplSelItems        []TmplItem
-	TmplNameBuf         []rune
-	TmplCancelModal     bool
-	TmplReviewCursor    int
-	TmplSaveErr         string
+	// Sub-models for the Template and Marketplace tabs
+	TemplateUI    TemplateUIModel
+	MarketplaceUI MarketplaceUIModel
 
 	// Project picker modal
 	ProjectPickerMode bool
@@ -92,7 +83,7 @@ type AppModel struct {
 }
 
 // NewAppModel creates a new root application model.
-func NewAppModel(projects []model.ProjectInfo, registries []model.RegistryInfo) AppModel {
+func NewAppModel(projects []model.ProjectInfo, marketplaces []model.MarketplaceInfo) AppModel {
 	m := AppModel{
 		ActivePane:  SidebarPane,
 		ActiveScope: model.Global,
@@ -102,8 +93,8 @@ func NewAppModel(projects []model.ProjectInfo, registries []model.RegistryInfo) 
 	m.Sidebar = NewSidebarModel(projects)
 	m.MainArea = NewMainAreaModel()
 	m.DetailPanel = NewDetailModel()
-	m.TemplateUI = NewTemplateUIModel(registries)
-	m.RegistryUI = NewRegistryUIModel(registries)
+	m.TemplateUI = NewTemplateUIModel()
+	m.MarketplaceUI = NewMarketplaceUIModel(marketplaces, nil)
 	return m
 }
 
@@ -123,16 +114,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		// ctrl+c always quits; q quits unless a modal or name-input is open
+		// ctrl+c always quits; q quits unless a modal or text-input is open.
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
-		nameInputActive := m.TemplateCreating && m.TmplStep == TmplStepName
-		if key.Matches(msg, m.Keys.Quit) && !m.ProjectPickerMode && !m.DeleteConfirmMode && !nameInputActive {
+		textInputActive := m.ActiveMainMode == ModeMarketplace && m.MarketplaceUI.Mode == MpModeAdd
+		if key.Matches(msg, m.Keys.Quit) && !m.ProjectPickerMode && !m.DeleteConfirmMode && !textInputActive {
 			return m, tea.Quit
 		}
 
-		// Delete confirmation captures all input when open
+		// Delete confirmation captures all input when open.
 		if m.DeleteConfirmMode {
 			switch msg.String() {
 			case "y", "Y", "enter":
@@ -147,49 +138,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Project picker captures all input when open
+		// Project picker captures all input when open.
 		if m.ProjectPickerMode {
 			var cmd tea.Cmd
 			m.ProjectPicker, cmd = m.ProjectPicker.Update(msg)
 			return m, cmd
 		}
 
-		// Registry URL input, delete confirmation, or publish picker captures all input
-		if m.ActiveMainMode == ModeRegistry && (m.RegistryUI.InputMode != RegistryBrowse || m.RegistryUI.DeleteConfirm) {
+		// Marketplace tab: source-input, plugin browse, install dialog, or
+		// delete confirmation each capture all input.
+		if m.ActiveMainMode == ModeMarketplace && m.marketplaceCapturesInput() {
 			var cmd tea.Cmd
-			m.RegistryUI, cmd = m.RegistryUI.Update(msg)
+			m.MarketplaceUI, cmd = m.MarketplaceUI.Update(msg)
 			return m, cmd
 		}
 
-		// Template creation: cancel confirmation modal
-		if m.TmplCancelModal {
-			switch msg.String() {
-			case "y", "Y", "enter":
-				m.stopTmplCreate()
-			case "n", "N", "esc":
-				m.TmplCancelModal = false
-			}
-			return m, nil
-		}
-
-		// Template creation: review step — capture navigation
-		if m.TemplateCreating && m.TmplStep == TmplStepReview {
-			return m.updateTmplReview(msg)
-		}
-
-		// Template creation: name-input step — capture all keys as text
-		if m.TemplateCreating && m.TmplStep == TmplStepName {
-			return m.updateTmplName(msg)
-		}
-
-		// Template creation browse phase: ESC shows cancel modal
-		if m.TemplateCreating && key.Matches(msg, m.Keys.Back) {
-			m.TmplCancelModal = true
-			return m, nil
-		}
-
 		// Tab toggles focus between sidebar and main pane.
-		// When leaving the sidebar, restore the previously focused main element.
 		if key.Matches(msg, m.Keys.SwitchPane) {
 			if m.ActivePane == SidebarPane {
 				if m.prevMainElem != elemNone {
@@ -203,15 +167,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// 'n': start template creation wizard (works regardless of focused element)
-		if !m.TemplateCreating && m.ActivePane == MainPane && m.ActiveMainMode == ModeBrowse {
-			if key.Matches(msg, m.Keys.CreateTemplate) {
-				m.startTmplCreate()
-				return m, nil
-			}
-		}
-
-		// Directional navigation (data-driven: edge-aware neighbor jumping)
+		// Directional navigation (data-driven: edge-aware neighbor jumping).
 		switch {
 		case key.Matches(msg, m.Keys.Up):
 			return m.handleNav(navUp, msg)
@@ -231,14 +187,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleCtrlNav(navRight)
 		}
 
-		// Non-directional keys: delegate to sidebar when sidebar is focused
+		// Non-directional keys: delegate to sidebar when sidebar is focused.
 		if m.ActivePane == SidebarPane {
 			var cmd tea.Cmd
 			m.Sidebar, cmd = m.Sidebar.Update(msg)
 			return m, cmd
 		}
 
-		// Mode switching (1-3) — main pane only
+		// Mode switching (1-3).
 		switch msg.String() {
 		case "1":
 			m.ActiveMainMode = ModeBrowse
@@ -247,25 +203,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.switchToTemplate()
 			return m, nil
 		case "3":
-			m.ActiveMainMode = ModeRegistry
+			m.ActiveMainMode = ModeMarketplace
 			return m, nil
 		}
 
-		// Template creation browse phase: Space toggles, Enter advances to review
-		if m.TemplateCreating {
-			switch {
-			case key.Matches(msg, m.Keys.ToggleCheck):
-				m.toggleTmplItem()
-				return m, nil
-			case key.Matches(msg, m.Keys.Select):
-				if len(m.TmplSelItems) > 0 {
-					m.TmplStep = TmplStepReview
-					m.TmplReviewCursor = 0
-				}
-				return m, nil
-			}
-		} else if key.Matches(msg, m.Keys.Template) {
-			// `t` shortcut: jump to template mode (disabled during template creation)
+		if key.Matches(msg, m.Keys.Template) {
 			m.switchToTemplate()
 			return m, nil
 		}
@@ -279,19 +221,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Mode-specific non-directional key handling
+		// Mode-specific non-directional key handling.
 		if m.ActiveMainMode == ModeTemplate {
 			var cmd tea.Cmd
 			m.TemplateUI, cmd = m.TemplateUI.Update(msg)
 			return m, cmd
 		}
-		if m.ActiveMainMode == ModeRegistry {
+		if m.ActiveMainMode == ModeMarketplace {
 			var cmd tea.Cmd
-			m.RegistryUI, cmd = m.RegistryUI.Update(msg)
+			m.MarketplaceUI, cmd = m.MarketplaceUI.Update(msg)
 			return m, cmd
 		}
 
-		// Browse mode: delegate remaining keys to MainArea
+		// Browse mode: delegate remaining keys to MainArea.
 		var cmd tea.Cmd
 		m.MainArea, cmd = m.MainArea.Update(msg)
 		return m, cmd
@@ -328,6 +270,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.DetailPanel.Asset = nil
 		m.DetailPanel.Item = nil
 		m.DetailPanel.Diff = nil
+		m.MarketplaceUI.SetActiveProject(msg.Project)
 		return m, func() tea.Msg { return RefreshMsg{} }
 
 	case AssetSelectedMsg:
@@ -358,11 +301,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.Sidebar.Cursor > len(m.Projects) {
 			m.Sidebar.Cursor = len(m.Projects)
 		}
-		// Keep ActiveIndex consistent after removal
 		if removedSidebarIdx >= 0 {
 			switch {
 			case m.Sidebar.ActiveIndex == removedSidebarIdx:
-				m.Sidebar.ActiveIndex = 0 // fall back to Global
+				m.Sidebar.ActiveIndex = 0
 			case m.Sidebar.ActiveIndex > removedSidebarIdx:
 				m.Sidebar.ActiveIndex--
 			}
@@ -370,6 +312,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ActiveProject != nil && m.ActiveProject.Name == msg.Name {
 			m.ActiveScope = model.Global
 			m.ActiveProject = nil
+			m.MarketplaceUI.SetActiveProject(nil)
 		}
 		return m, func() tea.Msg { return RefreshMsg{} }
 
@@ -392,111 +335,74 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg { return RefreshMsg{} }
 
-	case RegistryAddedMsg:
-		cfg, err := config.Load()
-		if err == nil {
-			if addErr := cfg.AddRegistry(msg.Name, msg.URL); addErr == nil {
-				m.RegistryUI.Registries = cfg.ListRegistries()
-				m.RegistryUI.Syncing = true
-				m.RegistryUI.SyncOK = false
-				// Sync the newly added registry in background
-				return m, func() tea.Msg {
-					reg := model.RegistryInfo{Name: msg.Name, URL: msg.URL}
-					_, syncErr := registry.Sync(reg)
-					errs := map[string]error{}
-					if syncErr != nil {
-						errs[msg.Name] = syncErr
-					}
-					return RegistrySyncDoneMsg{Errors: errs}
-				}
-			}
-		}
-		return m, nil
+	// ── Marketplace messages ──────────────────────────────────────────────────
 
-	case RegistryRemovedMsg:
-		cfg, err := config.Load()
-		if err == nil {
-			if rmErr := cfg.RemoveRegistry(msg.Name); rmErr == nil {
-				_ = registry.RemoveCache(msg.Name)
-				m.RegistryUI.Registries = cfg.ListRegistries()
-				if m.RegistryUI.Cursor >= len(m.RegistryUI.Registries) && m.RegistryUI.Cursor > 0 {
-					m.RegistryUI.Cursor--
-				}
-			}
-		}
-		return m, nil
+	case MarketplaceAddedMsg:
+		return m.handleMarketplaceAdded(msg)
 
-	case RegistrySyncMsg:
-		m.RegistryUI.Syncing = true
-		m.RegistryUI.SyncErrors = nil
-		regs := m.RegistryUI.Registries
-		syncName := msg.Name
-		return m, func() tea.Msg {
-			var targets []model.RegistryInfo
-			if syncName == "" {
-				targets = regs
-			} else {
-				for _, r := range regs {
-					if r.Name == syncName {
-						targets = append(targets, r)
-						break
-					}
-				}
-			}
-			errs := registry.SyncAll(targets)
-			return RegistrySyncDoneMsg{Errors: errs}
-		}
+	case MarketplaceRemovedMsg:
+		return m.handleMarketplaceRemoved(msg)
 
-	case RegistrySyncDoneMsg:
-		m.RegistryUI.Syncing = false
+	case MarketplaceSyncMsg:
+		return m.handleMarketplaceSync(msg)
+
+	case MarketplaceSyncDoneMsg:
+		m.MarketplaceUI.Syncing = false
 		if len(msg.Errors) > 0 {
-			m.RegistryUI.SyncErrors = msg.Errors
-			m.RegistryUI.SyncOK = false
+			m.MarketplaceUI.SyncErrors = msg.Errors
+			m.MarketplaceUI.SyncOK = false
 		} else {
-			m.RegistryUI.SyncErrors = nil
-			m.RegistryUI.SyncOK = true
+			m.MarketplaceUI.SyncErrors = nil
+			m.MarketplaceUI.SyncOK = true
 		}
-		// Reload template UI to pick up new registry templates
-		m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
-		m.TemplateUI.Width = m.mainAreaWidth()
-		m.TemplateUI.Height = m.mainAreaHeight()
 		return m, nil
 
-	case RegistryPublishMsg:
-		m.RegistryUI.Publishing = true
-		m.RegistryUI.PublishErr = ""
-		m.RegistryUI.PublishOK = ""
-		regName := msg.RegistryName
-		tmplName := msg.TemplateName
-		tmplDir := msg.TemplateDir
-		regs := m.RegistryUI.Registries
-		return m, func() tea.Msg {
-			var reg model.RegistryInfo
-			for _, r := range regs {
-				if r.Name == regName {
-					reg = r
-					break
-				}
-			}
-			err := registry.PublishTemplate(reg, tmplName, tmplDir)
-			return RegistryPublishDoneMsg{TemplateName: tmplName, Err: err}
-		}
+	case marketplaceAddCompletedMsg:
+		m.MarketplaceUI.Marketplaces = msg.Marketplaces
+		m.MarketplaceUI.Syncing = false
+		m.MarketplaceUI.SyncOK = true
+		return m, nil
 
-	case RegistryPublishDoneMsg:
-		m.RegistryUI.Publishing = false
+	case MarketplaceOpenMsg:
+		return m.handleMarketplaceOpen(msg)
+
+	case MarketplaceLoadDoneMsg:
 		if msg.Err != nil {
-			m.RegistryUI.PublishErr = msg.Err.Error()
-			m.RegistryUI.PublishOK = ""
-		} else {
-			m.RegistryUI.PublishErr = ""
-			m.RegistryUI.PublishOK = fmt.Sprintf(
-				"テンプレート \"%s\" をアップロードしました", msg.TemplateName)
-			// Reload template UI to pick up the published template
-			m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
-			m.TemplateUI.Width = m.mainAreaWidth()
-			m.TemplateUI.Height = m.mainAreaHeight()
+			m.MarketplaceUI.LoadErr = msg.Err.Error()
+			m.MarketplaceUI.Mode = MpModePlugins
+			m.MarketplaceUI.Plugins = nil
+			return m, nil
 		}
+		// Set the selected marketplace pointer.
+		for i, mp := range m.MarketplaceUI.Marketplaces {
+			if mp.Name == msg.Name {
+				selected := m.MarketplaceUI.Marketplaces[i]
+				m.MarketplaceUI.SelectedMarketplace = &selected
+				break
+			}
+		}
+		m.MarketplaceUI.Plugins = msg.Plugins
+		m.MarketplaceUI.PluginCursor = 0
+		m.MarketplaceUI.LoadErr = ""
+		m.MarketplaceUI.Mode = MpModePlugins
 		return m, nil
+
+	case MarketplaceInstallMsg:
+		return m.handleMarketplaceInstall(msg)
+
+	case MarketplaceInstallDoneMsg:
+		m.MarketplaceUI.Installing = false
+		if msg.Err != nil {
+			m.MarketplaceUI.InstallErr = msg.Err.Error()
+			return m, nil
+		}
+		m.MarketplaceUI.InstallErr = ""
+		m.MarketplaceUI.InstallOK = fmt.Sprintf("%q をインストールしました（%s）",
+			msg.PluginName, summariesLabel(msg.Summaries))
+		m.MarketplaceUI.Mode = MpModeList
+		m.MarketplaceUI.SelectedPlugin = nil
+		m.MarketplaceUI.Targets = nil
+		return m, func() tea.Msg { return RefreshMsg{} }
 
 	case RefreshMsg:
 		globalAssets := scanner.ScanAllGlobal()
@@ -534,22 +440,205 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// marketplaceCapturesInput returns true when the marketplace tab is in a
+// sub-mode that needs to consume every keypress (text input, focused dialog,
+// or modal confirmation).
+func (m AppModel) marketplaceCapturesInput() bool {
+	if m.MarketplaceUI.DeleteConfirm {
+		return true
+	}
+	switch m.MarketplaceUI.Mode {
+	case MpModeAdd, MpModePlugins, MpModeInstall:
+		return true
+	}
+	return false
+}
+
+// handleMarketplaceAdded parses the source, syncs it, reads the manifest, and
+// persists the resulting MarketplaceInfo (using the manifest `name`).
+func (m AppModel) handleMarketplaceAdded(msg MarketplaceAddedMsg) (tea.Model, tea.Cmd) {
+	source := msg.Source
+	m.MarketplaceUI.Syncing = true
+	m.MarketplaceUI.SyncErrors = nil
+	m.MarketplaceUI.SyncOK = false
+
+	return m, func() tea.Msg {
+		src, err := marketplace.ParseSource(source)
+		if err != nil {
+			return MarketplaceSyncDoneMsg{Errors: map[string]error{source: err}}
+		}
+		manifestPath, err := marketplace.Sync(src)
+		if err != nil {
+			return MarketplaceSyncDoneMsg{Errors: map[string]error{source: err}}
+		}
+		manifest, _, err := marketplace.LoadMarketplace(manifestPath)
+		if err != nil {
+			return MarketplaceSyncDoneMsg{Errors: map[string]error{source: err}}
+		}
+		// Persist, return the (now populated) marketplaces list inline by
+		// triggering a re-load via a synthetic added-then-sync round trip.
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil {
+			return MarketplaceSyncDoneMsg{Errors: map[string]error{source: cfgErr}}
+		}
+		if err := cfg.AddMarketplace(manifest.Name, source); err != nil {
+			return MarketplaceSyncDoneMsg{Errors: map[string]error{manifest.Name: err}}
+		}
+		return marketplaceAddCompletedMsg{
+			Marketplaces: cfg.ListMarketplaces(),
+		}
+	}
+}
+
+// marketplaceAddCompletedMsg is delivered once the new marketplace is on disk
+// in config.json. The handler pushes the updated list into the UI model.
+type marketplaceAddCompletedMsg struct {
+	Marketplaces []model.MarketplaceInfo
+}
+
+func (m AppModel) handleMarketplaceRemoved(msg MarketplaceRemovedMsg) (tea.Model, tea.Cmd) {
+	cfg, err := config.Load()
+	if err != nil {
+		return m, nil
+	}
+	// Find the source so we can remove the cache via marketplace.RemoveCache.
+	var src marketplace.Source
+	for _, mp := range cfg.Marketplaces {
+		if mp.Name == msg.Name {
+			if parsed, err := marketplace.ParseSource(mp.Source); err == nil {
+				src = parsed
+			}
+			break
+		}
+	}
+	if rmErr := cfg.RemoveMarketplace(msg.Name); rmErr == nil {
+		_ = marketplace.RemoveCache(src)
+		m.MarketplaceUI.Marketplaces = cfg.ListMarketplaces()
+		if m.MarketplaceUI.Cursor >= len(m.MarketplaceUI.Marketplaces) && m.MarketplaceUI.Cursor > 0 {
+			m.MarketplaceUI.Cursor--
+		}
+	}
+	return m, nil
+}
+
+func (m AppModel) handleMarketplaceSync(msg MarketplaceSyncMsg) (tea.Model, tea.Cmd) {
+	m.MarketplaceUI.Syncing = true
+	m.MarketplaceUI.SyncErrors = nil
+	mps := m.MarketplaceUI.Marketplaces
+	target := msg.Name
+	return m, func() tea.Msg {
+		errs := make(map[string]error)
+		for _, mp := range mps {
+			if target != "" && mp.Name != target {
+				continue
+			}
+			src, err := marketplace.ParseSource(mp.Source)
+			if err != nil {
+				errs[mp.Name] = err
+				continue
+			}
+			if _, err := marketplace.Sync(src); err != nil {
+				errs[mp.Name] = err
+			}
+		}
+		return MarketplaceSyncDoneMsg{Errors: errs}
+	}
+}
+
+func (m AppModel) handleMarketplaceOpen(msg MarketplaceOpenMsg) (tea.Model, tea.Cmd) {
+	var info *model.MarketplaceInfo
+	for i, mp := range m.MarketplaceUI.Marketplaces {
+		if mp.Name == msg.Name {
+			selected := m.MarketplaceUI.Marketplaces[i]
+			info = &selected
+			break
+		}
+	}
+	if info == nil {
+		return m, nil
+	}
+	infoCopy := *info
+	return m, func() tea.Msg {
+		src, err := marketplace.ParseSource(infoCopy.Source)
+		if err != nil {
+			return MarketplaceLoadDoneMsg{Name: infoCopy.Name, Err: err}
+		}
+		manifestPath, err := marketplace.Sync(src)
+		if err != nil {
+			return MarketplaceLoadDoneMsg{Name: infoCopy.Name, Err: err}
+		}
+		_, plugins, err := marketplace.LoadMarketplace(manifestPath)
+		if err != nil {
+			return MarketplaceLoadDoneMsg{Name: infoCopy.Name, Err: err}
+		}
+		return MarketplaceLoadDoneMsg{Name: infoCopy.Name, Plugins: plugins}
+	}
+}
+
+func (m AppModel) handleMarketplaceInstall(msg MarketplaceInstallMsg) (tea.Model, tea.Cmd) {
+	plugin := msg.Plugin
+	chosen := msg.Targets
+	activeProject := m.ActiveProject
+
+	return m, func() tea.Msg {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return MarketplaceInstallDoneMsg{PluginName: plugin.Name, Err: err}
+		}
+
+		var targets []marketplace.InstallTarget
+		for _, opt := range chosen {
+			base := home
+			if opt.Scope == model.Project {
+				if activeProject == nil {
+					continue
+				}
+				base = activeProject.Path
+			}
+			targets = append(targets, marketplace.InstallTarget{
+				Provider: opt.Provider,
+				Scope:    opt.Scope,
+				BasePath: base,
+			})
+		}
+		if len(targets) == 0 {
+			return MarketplaceInstallDoneMsg{
+				PluginName: plugin.Name,
+				Err:        fmt.Errorf("インストール先が選択されていません"),
+			}
+		}
+
+		summaries, err := marketplace.InstallPlugin(plugin, targets)
+		return MarketplaceInstallDoneMsg{
+			PluginName: plugin.Name,
+			Summaries:  summaries,
+			Err:        err,
+		}
+	}
+}
+
+// summariesLabel renders a one-line digest for the install banner.
+func summariesLabel(ss []marketplace.InstallSummary) string {
+	if len(ss) == 0 {
+		return "no targets"
+	}
+	parts := make([]string, 0, len(ss))
+	for _, s := range ss {
+		parts = append(parts, fmt.Sprintf("%s/%s", s.Target.Provider.String(), scopeShort(s.Target.Scope)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func scopeShort(s model.Scope) string {
+	if s == model.Project {
+		return "Project"
+	}
+	return "Global"
+}
+
 func (m AppModel) View() string {
 	if m.Width == 0 || m.Height == 0 {
 		return "Loading..."
-	}
-
-	// Template creation cancel confirmation modal
-	if m.TmplCancelModal {
-		content := fmt.Sprintf(
-			"%s\n\n  Cancel template creation?\n  All %d selected item(s) will be discarded.\n\n  %s   %s",
-			TemplateCreateBannerStyle.Render(" ◈ TEMPLATE CREATION "),
-			len(m.TmplSelItems),
-			SelectedStyle.Render("[y] Yes, cancel"),
-			NormalStyle.Render("[n] Keep going"),
-		)
-		modal := ActiveBorderStyle.Width(52).Padding(1, 2).Render(content)
-		return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
 	// Delete confirmation modal
@@ -565,7 +654,6 @@ func (m AppModel) View() string {
 		return lipgloss.Place(m.Width, m.Height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
-	// Project picker modal: render centered over blank background
 	if m.ProjectPickerMode {
 		modal := ActiveBorderStyle.
 			Width(m.ProjectPicker.Width).
@@ -578,8 +666,6 @@ func (m AppModel) View() string {
 	mainWidth := m.mainAreaWidth()
 	contentHeight := m.Height - 2
 
-	// Explicitly pad sidebar content to the inner height so its border always
-	// aligns with the main panel's border, regardless of content length.
 	innerH := contentHeight - 2
 	sidebarContent := padToHeight(m.Sidebar.View(), innerH)
 	sidebarBox := m.sidebarBorder().
@@ -591,40 +677,24 @@ func (m AppModel) View() string {
 	mainInnerW := mainWidth - 2
 	switch m.ActiveMainMode {
 	case ModeBrowse:
-		if m.TemplateCreating && m.TmplStep != TmplStepBrowse {
-			// Wizard review / name steps: full-width, no detail panel
-			var wizardContent string
-			switch m.TmplStep {
-			case TmplStepReview:
-				wizardContent = m.renderTmplReview()
-			case TmplStepName:
-				wizardContent = m.renderTmplName()
-			}
-			mainContent = m.renderModeTabs(mainInnerW) + "\n" + wizardContent
-		} else {
-			// Normal Browse: list + detail panel.
-			// Tab bar lives inside the list section so its right edge aligns with
-			// the right-aligned provider labels. The bottom border is extended to
-			// m.MainArea.Width so the separator spans the full list section width.
-			tabBar := m.renderModeTabs(m.MainArea.Width)
-			listSection := lipgloss.NewStyle().
-				Width(m.MainArea.Width).
-				Height(contentHeight - 2). // full main-box inner height
-				Render(tabBar + "\n" + m.MainArea.View())
-			detailBox := lipgloss.NewStyle().
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(MutedColor).
-				Margin(0, 0, 0, 1).
-				Padding(0, 0, 0, 1).
-				Width(m.DetailPanel.Width).
-				Height(m.DetailPanel.Height).
-				Render(m.DetailPanel.View())
-			mainContent = lipgloss.JoinHorizontal(lipgloss.Top, listSection, detailBox)
-		}
+		tabBar := m.renderModeTabs(m.MainArea.Width)
+		listSection := lipgloss.NewStyle().
+			Width(m.MainArea.Width).
+			Height(contentHeight - 2).
+			Render(tabBar + "\n" + m.MainArea.View())
+		detailBox := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, false, true).
+			BorderForeground(MutedColor).
+			Margin(0, 0, 0, 1).
+			Padding(0, 0, 0, 1).
+			Width(m.DetailPanel.Width).
+			Height(m.DetailPanel.Height).
+			Render(m.DetailPanel.View())
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, listSection, detailBox)
 	case ModeTemplate:
 		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.TemplateUI.View()
-	case ModeRegistry:
-		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.RegistryUI.View()
+	case ModeMarketplace:
+		mainContent = m.renderModeTabs(mainInnerW) + "\n" + m.MarketplaceUI.View()
 	}
 
 	mainBox := m.mainBorder().
@@ -633,34 +703,7 @@ func (m AppModel) View() string {
 		Render(mainContent)
 
 	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebarBox, mainBox)
-
-	// Help bar — context-aware in template creation mode.
-	var helpText string
-	if m.TemplateCreating {
-		switch m.TmplStep {
-		case TmplStepBrowse:
-			helpText = "space:select/deselect · enter:review (need ≥1) · esc:cancel creation"
-		case TmplStepReview:
-			helpText = "↑↓:navigate · space:deselect · enter:name template · esc:back"
-		case TmplStepName:
-			helpText = "type name · enter:save · esc:back"
-		}
-	} else {
-		helpText = HelpText()
-	}
-	help := HelpStyle.Render(helpText)
-
-	if m.TemplateCreating {
-		count := len(m.TmplSelItems)
-		bannerText := fmt.Sprintf(" ◈ TEMPLATE CREATION · %d selected ", count)
-		banner := TemplateCreateBannerStyle.Render(bannerText)
-		gap := m.Width - lipgloss.Width(help) - lipgloss.Width(banner)
-		if gap < 1 {
-			gap = 1
-		}
-		help = help + strings.Repeat(" ", gap) + banner
-	}
-
+	help := HelpStyle.Render(HelpText())
 	return layout + "\n" + help
 }
 
@@ -686,12 +729,6 @@ func (m AppModel) sidebarBorder() lipgloss.Style {
 }
 
 func (m AppModel) mainBorder() lipgloss.Style {
-	if m.TemplateCreating {
-		// Use a bright red border to signal template creation mode.
-		return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#C92A2A"))
-	}
 	if m.ActivePane == MainPane {
 		return ActiveBorderStyle
 	}
@@ -712,16 +749,10 @@ func (m *AppModel) pickerDimensions() {
 }
 
 func (m *AppModel) updateLayout() {
-	// Main box inner height = Height - 4.
-	// In Browse mode the tab bar (2 lines) + "\n" (1 line) sit above the list,
-	// all inside the left section → list height = (Height-4) - 3 = Height - 7.
 	contentH := m.Height - 7
 	if contentH < 4 {
 		contentH = 4
 	}
-
-	// Horizontal split: list (55%) on the left, detail (45%) on the right.
-	// Inner main-box content width = mainAreaWidth() - 2 (border = 1 each side).
 	totalW := m.mainAreaWidth() - 2
 	listW := totalW * 70 / 100
 	if listW < 20 {
@@ -733,246 +764,31 @@ func (m *AppModel) updateLayout() {
 	}
 
 	m.Sidebar.Width = m.sidebarWidth() - 4
-	m.Sidebar.Height = m.Height - 4 // inner height of sidebar box
+	m.Sidebar.Height = m.Height - 4
 	m.MainArea.Width = listW
 	m.MainArea.Height = contentH
-	m.DetailPanel.Width = detailBoxW - 3 // inner width (left margin:1 + left border:1 + left padding:1)
-	detailH := m.Height - 4              // no top/bottom border
+	m.DetailPanel.Width = detailBoxW - 3
+	detailH := m.Height - 4
 	if detailH < 3 {
 		detailH = 3
 	}
 	m.DetailPanel.Height = detailH
 	m.TemplateUI.Width = m.mainAreaWidth() - 4
 	m.TemplateUI.Height = m.Height - 4
+	m.MarketplaceUI.Width = m.mainAreaWidth() - 4
+	m.MarketplaceUI.Height = m.Height - 4
 	m.pickerDimensions()
 }
 
-// switchToTemplate initialises and activates the template mode.
 func (m *AppModel) switchToTemplate() {
 	m.ActiveMainMode = ModeTemplate
-	m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
+	m.TemplateUI = NewTemplateUIModel()
 	m.TemplateUI.Width = m.mainAreaWidth()
 	m.TemplateUI.Height = m.mainAreaHeight()
 }
 
-// ── Template creation helpers ─────────────────────────────────────────────────
+// ── Focus management ──────────────────────────────────────────────────────────
 
-// startTmplCreate enters template creation mode and switches to Browse.
-func (m *AppModel) startTmplCreate() {
-	m.TemplateCreating = true
-	m.TmplStep = TmplStepBrowse
-	m.TmplSelItems = nil
-	m.TmplNameBuf = nil
-	m.TmplCancelModal = false
-	m.TmplReviewCursor = 0
-	m.TmplSaveErr = ""
-	m.ActiveMainMode = ModeBrowse
-	m.focusList()
-	m.MainArea.TemplateCreating = true
-	m.MainArea.TemplateSelPaths = nil
-}
-
-// stopTmplCreate resets all template creation state.
-func (m *AppModel) stopTmplCreate() {
-	m.TemplateCreating = false
-	m.TmplStep = TmplStepBrowse
-	m.TmplSelItems = nil
-	m.TmplNameBuf = nil
-	m.TmplCancelModal = false
-	m.TmplReviewCursor = 0
-	m.TmplSaveErr = ""
-	m.MainArea.TemplateCreating = false
-	m.MainArea.TemplateSelPaths = nil
-}
-
-// tmplScopeLabel returns a display label for the current active scope.
-func (m AppModel) tmplScopeLabel() string {
-	if m.ActiveProject != nil {
-		return m.ActiveProject.Name
-	}
-	return "Global"
-}
-
-// tmplSelPaths builds a set of selected keys for the MainArea renderer.
-// For embedded items the key includes the item name; for regular items it's the source path.
-func (m AppModel) tmplSelPaths() map[string]bool {
-	if len(m.TmplSelItems) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(m.TmplSelItems))
-	for _, item := range m.TmplSelItems {
-		out[item.SelectKey()] = true
-	}
-	return out
-}
-
-// toggleTmplItem toggles the item currently under the cursor in the Browse list.
-// It relies on the DetailPanel to know which asset/item is focused.
-func (m *AppModel) toggleTmplItem() {
-	asset := m.DetailPanel.Asset
-	item := m.DetailPanel.Item
-	if asset == nil {
-		return
-	}
-	ti := MakeTmplItem(*asset, item, m.tmplScopeLabel())
-	if ti == nil {
-		return
-	}
-	for i, existing := range m.TmplSelItems {
-		if existing.SelectKey() == ti.SelectKey() {
-			// Already selected → deselect
-			m.TmplSelItems = append(m.TmplSelItems[:i], m.TmplSelItems[i+1:]...)
-			m.MainArea.TemplateSelPaths = m.tmplSelPaths()
-			return
-		}
-	}
-	// Not yet selected → add
-	m.TmplSelItems = append(m.TmplSelItems, *ti)
-	m.MainArea.TemplateSelPaths = m.tmplSelPaths()
-}
-
-// updateTmplReview handles key input during the review step.
-func (m AppModel) updateTmplReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.Keys.Back):
-		m.TmplStep = TmplStepBrowse
-	case key.Matches(msg, m.Keys.Up):
-		if m.TmplReviewCursor > 0 {
-			m.TmplReviewCursor--
-		}
-	case key.Matches(msg, m.Keys.Down):
-		if m.TmplReviewCursor < len(m.TmplSelItems)-1 {
-			m.TmplReviewCursor++
-		}
-	case key.Matches(msg, m.Keys.ToggleCheck):
-		if m.TmplReviewCursor < len(m.TmplSelItems) {
-			m.TmplSelItems = append(
-				m.TmplSelItems[:m.TmplReviewCursor],
-				m.TmplSelItems[m.TmplReviewCursor+1:]...,
-			)
-			if m.TmplReviewCursor >= len(m.TmplSelItems) && m.TmplReviewCursor > 0 {
-				m.TmplReviewCursor--
-			}
-			m.MainArea.TemplateSelPaths = m.tmplSelPaths()
-			if len(m.TmplSelItems) == 0 {
-				m.TmplStep = TmplStepBrowse
-			}
-		}
-	case key.Matches(msg, m.Keys.Select):
-		if len(m.TmplSelItems) > 0 {
-			m.TmplStep = TmplStepName
-			m.TmplSaveErr = ""
-		}
-	}
-	return m, nil
-}
-
-// updateTmplName handles key input during the name-input step.
-func (m AppModel) updateTmplName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, m.Keys.Back):
-		m.TmplStep = TmplStepReview
-		m.TmplSaveErr = ""
-	case key.Matches(msg, m.Keys.Select):
-		name := strings.TrimSpace(string(m.TmplNameBuf))
-		if name == "" {
-			m.TmplSaveErr = "Name cannot be empty."
-			break
-		}
-		refs := make([]tmplpkg.FileRef, 0, len(m.TmplSelItems))
-		for _, it := range m.TmplSelItems {
-			refs = append(refs, tmplpkg.FileRef{
-				SrcPath:    it.SrcPath,
-				DestRelDir: it.DestRelDir,
-				Filename:   it.Filename,
-				AssetType:  it.AssetType,
-				Provider:   it.Provider,
-				ItemName:   it.ItemName,
-				Embedded:   it.Embedded,
-			})
-		}
-		if err := tmplpkg.SaveUserTemplate(name, refs); err != nil {
-			m.TmplSaveErr = err.Error()
-			break
-		}
-		m.stopTmplCreate()
-		// Reload template UI so the new template appears immediately.
-		m.TemplateUI = NewTemplateUIModel(m.RegistryUI.Registries)
-		return m, func() tea.Msg { return RefreshMsg{} }
-	default:
-		m.TmplSaveErr = "" // clear error on any key press
-		switch msg.String() {
-		case "backspace":
-			if len(m.TmplNameBuf) > 0 {
-				m.TmplNameBuf = m.TmplNameBuf[:len(m.TmplNameBuf)-1]
-			}
-		default:
-			if msg.Type == tea.KeyRunes {
-				m.TmplNameBuf = append(m.TmplNameBuf, msg.Runes...)
-			}
-		}
-	}
-	return m, nil
-}
-
-// renderTmplReview renders the review step content.
-func (m AppModel) renderTmplReview() string {
-	var b strings.Builder
-	b.WriteString(TitleStyle.Render(fmt.Sprintf("Review Selected Items (%d)", len(m.TmplSelItems))))
-	b.WriteString("\n\n")
-	for i, item := range m.TmplSelItems {
-		var line string
-		if i == m.TmplReviewCursor {
-			line = SelectedStyle.Render(fmt.Sprintf("> [x] %s", item.Label))
-		} else {
-			line = NormalStyle.Render(fmt.Sprintf("  [x] %s", item.Label))
-		}
-		b.WriteString(line + "\n")
-	}
-	if len(m.TmplSelItems) == 0 {
-		b.WriteString(DimStyle.Render("  (no items selected)") + "\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(DimStyle.Render("  space:deselect · enter:next → name · esc:back"))
-	return b.String()
-}
-
-// renderTmplName renders the name-input step content.
-func (m AppModel) renderTmplName() string {
-	var b strings.Builder
-	b.WriteString(TitleStyle.Render("Name Your Template"))
-	b.WriteString("\n\n")
-
-	name := string(m.TmplNameBuf)
-	nameBox := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(WarningColor).
-		Padding(0, 1).
-		Width(40).
-		Render(name + "▌")
-	b.WriteString("  ")
-	b.WriteString(nameBox)
-	b.WriteString("\n")
-
-	if m.TmplSaveErr != "" {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(ErrorColor).Render("  ✗ " + m.TmplSaveErr))
-	}
-
-	b.WriteString("\n\n")
-	b.WriteString(DimStyle.Render(fmt.Sprintf("  %d item(s) will be saved:", len(m.TmplSelItems))))
-	b.WriteString("\n")
-	for _, item := range m.TmplSelItems {
-		b.WriteString(DimStyle.Render("    · " + item.Label) + "\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(DimStyle.Render("  enter:save · esc:back"))
-	return b.String()
-}
-
-// focusSidebar moves keyboard focus to the Scopes sidebar.
-// The caller's current main-pane element is remembered so that
-// leaving the sidebar restores focus to the same place.
 func (m *AppModel) focusSidebar() {
 	if m.ActivePane == MainPane {
 		m.prevMainElem = m.currentElem()
@@ -984,7 +800,6 @@ func (m *AppModel) focusSidebar() {
 	m.MainArea.Focused = false
 }
 
-// focusModeTabs moves keyboard focus to the outer mode tab bar.
 func (m *AppModel) focusModeTabs() {
 	m.AppTabFocused = true
 	m.MainArea.TabFocused = false
@@ -993,7 +808,6 @@ func (m *AppModel) focusModeTabs() {
 	m.MainArea.Focused = false
 }
 
-// focusBrowseTabs moves keyboard focus to the inner Browse tab bar.
 func (m *AppModel) focusBrowseTabs() {
 	m.AppTabFocused = false
 	m.MainArea.TabFocused = true
@@ -1002,7 +816,6 @@ func (m *AppModel) focusBrowseTabs() {
 	m.MainArea.Focused = true
 }
 
-// focusList moves keyboard focus to the main content list.
 func (m *AppModel) focusList() {
 	m.AppTabFocused = false
 	m.MainArea.TabFocused = false
@@ -1013,7 +826,6 @@ func (m *AppModel) focusList() {
 
 // ── Data-driven navigation ────────────────────────────────────────────────────
 
-// currentElem returns which UI element currently holds keyboard focus.
 func (m AppModel) currentElem() focusElem {
 	if m.ActivePane == SidebarPane {
 		return elemSidebar
@@ -1027,8 +839,6 @@ func (m AppModel) currentElem() focusElem {
 	return elemList
 }
 
-// navNeighbor returns the element adjacent to the current element in direction dir.
-// Returns elemNone when no neighbor exists.
 func (m AppModel) navNeighbor(dir navDir) focusElem {
 	switch m.currentElem() {
 	case elemSidebar:
@@ -1071,54 +881,50 @@ func (m AppModel) navNeighbor(dir navDir) focusElem {
 	return elemNone
 }
 
-// navAtEdge reports whether the current element is at the boundary in direction dir,
-// meaning navigation should jump to the neighbor rather than act locally.
 func (m AppModel) navAtEdge(dir navDir) bool {
 	switch m.currentElem() {
 	case elemSidebar:
-		// Left/Right always jump (or no-op if no neighbor); Up/Down handled locally.
 		return dir == navLeft || dir == navRight
 	case elemModeTabs:
 		switch dir {
 		case navUp:
-			return true // no element above mode tabs
+			return true
 		case navDown:
-			return true // always jump down to content
+			return true
 		case navLeft:
 			return m.ActiveMainMode == 0
 		case navRight:
-			return false // local: clamp at last mode
+			return false
 		}
 	case elemBrowseTabs:
 		switch dir {
 		case navUp, navDown:
-			return true // always jump to neighbor
+			return true
 		case navLeft:
 			return m.MainArea.ActiveBrowseTab == 0
 		case navRight:
-			return false // local: SwitchBrowseTab handles clamping
+			return false
 		}
 	case elemList:
 		switch dir {
 		case navLeft, navRight:
-			return true // left→Sidebar; right→nothing (clamp)
+			return true
 		case navUp:
 			switch m.ActiveMainMode {
-			case ModeRegistry:
-				return true
+			case ModeMarketplace:
+				return m.MarketplaceUI.Mode == MpModeList && m.MarketplaceUI.Cursor == 0
 			case ModeTemplate:
 				return m.TemplateUI.Step == StepSelectTemplate && m.TemplateUI.Cursor == 0
-			default: // ModeBrowse
+			default:
 				return m.MainArea.AtTop()
 			}
 		case navDown:
-			return false // local: component handles clamping
+			return false
 		}
 	}
 	return false
 }
 
-// focusTo switches keyboard focus to the specified element.
 func (m *AppModel) focusTo(elem focusElem) {
 	switch elem {
 	case elemSidebar:
@@ -1132,8 +938,6 @@ func (m *AppModel) focusTo(elem focusElem) {
 	}
 }
 
-// navLocal performs the intra-element navigation action for the current element.
-// Called by handleNav when the element is NOT at an edge.
 func (m *AppModel) navLocal(dir navDir, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.currentElem() {
 	case elemSidebar:
@@ -1167,6 +971,11 @@ func (m *AppModel) navLocal(dir navDir, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.TemplateUI, cmd = m.TemplateUI.Update(msg)
 			return m, cmd
 		}
+		if m.ActiveMainMode == ModeMarketplace {
+			var cmd tea.Cmd
+			m.MarketplaceUI, cmd = m.MarketplaceUI.Update(msg)
+			return m, cmd
+		}
 		var cmd tea.Cmd
 		m.MainArea, cmd = m.MainArea.Update(msg)
 		return m, cmd
@@ -1174,8 +983,6 @@ func (m *AppModel) navLocal(dir navDir, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleNav handles a directional key press with edge-aware neighbor jumping.
-// At edge → jump to neighbor (if any); otherwise → local intra-element action.
 func (m *AppModel) handleNav(dir navDir, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.navAtEdge(dir) {
 		neighbor := m.navNeighbor(dir)
@@ -1187,8 +994,6 @@ func (m *AppModel) handleNav(dir navDir, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.navLocal(dir, msg)
 }
 
-// handleCtrlNav handles Ctrl+Arrow: always jump to the neighbor element,
-// skipping any local intra-element action regardless of edge state.
 func (m *AppModel) handleCtrlNav(dir navDir) (tea.Model, tea.Cmd) {
 	neighbor := m.navNeighbor(dir)
 	if neighbor != elemNone {
@@ -1197,9 +1002,6 @@ func (m *AppModel) handleCtrlNav(dir navDir) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderModeTabs renders the horizontal tab bar.
-// fillWidth extends the bottom separator line to the given width so it aligns
-// with right-aligned content below. Pass 0 to skip the filler.
 func (m AppModel) renderModeTabs(fillWidth int) string {
 	rendered := make([]string, len(allMainModes))
 	for i, mode := range allMainModes {
@@ -1215,9 +1017,6 @@ func (m AppModel) renderModeTabs(fillWidth int) string {
 		}
 	}
 	tabs := lipgloss.JoinHorizontal(lipgloss.Bottom, rendered...)
-
-	// Extend the bottom separator line to fillWidth using a borderless filler
-	// so the horizontal rule spans the full container width.
 	if fillWidth > 0 {
 		remaining := fillWidth - lipgloss.Width(tabs)
 		if remaining > 0 {
@@ -1241,8 +1040,6 @@ func (m AppModel) findDiff(assetType model.AssetType, provider model.Provider) *
 	return nil
 }
 
-// padToHeight ensures content is exactly h lines tall by appending empty lines.
-// This guarantees the sidebar border matches the main panel border height.
 func padToHeight(content string, h int) string {
 	lines := strings.Split(content, "\n")
 	for len(lines) < h {

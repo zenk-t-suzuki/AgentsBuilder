@@ -141,10 +141,14 @@ type ProjectInfo struct {
 	Path string `json:"path"`
 }
 
-// RegistryInfo holds a registered Git repository used as a shared template registry.
-type RegistryInfo struct {
-	Name string `json:"name"` // display name (derived from URL if not specified)
-	URL  string `json:"url"`  // Git clone URL (HTTPS or SSH)
+// MarketplaceInfo holds a registered Claude Code-compatible plugin marketplace.
+// Source is the original user input (e.g. "anthropics/skills", a Git URL, or
+// a local path) and is round-tripped through config.json so the user-facing
+// representation never changes. Name is the catalog name read from
+// .claude-plugin/marketplace.json after the first sync.
+type MarketplaceInfo struct {
+	Name   string `json:"name"`             // marketplace.json `name` (kebab-case)
+	Source string `json:"source"`           // raw user input, parsed via marketplace.ParseSource
 }
 
 // DiffResult captures the diff/priority relationship between global and project assets.

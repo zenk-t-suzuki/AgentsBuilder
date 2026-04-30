@@ -22,9 +22,8 @@ type KeyMap struct {
 	ToggleCheck      key.Binding
 	DetailScrollUp   key.Binding // scroll detail panel up
 	DetailScrollDown key.Binding // scroll detail panel down
-	BrowseTabLeft    key.Binding // prev inner Browse tab
-	BrowseTabRight   key.Binding // next inner Browse tab
-	CreateTemplate   key.Binding // start template creation wizard
+	BrowseTabLeft  key.Binding // prev inner Browse tab
+	BrowseTabRight key.Binding // next inner Browse tab
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -110,14 +109,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("."),
 			key.WithHelp(".", "next tab"),
 		),
-		CreateTemplate: key.NewBinding(
-			key.WithKeys("n"),
-			key.WithHelp("n", "new template"),
-		),
 	}
 }
 
 // HelpText returns a short help string.
 func HelpText() string {
-	return "←/→:pane | ↑/↓:nav | Ctrl+←/→/↑/↓:jump | ,/.:tab | [/]:detail | 1-3:mode | n:tmpl | a:add | d:del | q:quit"
+	return "←/→:pane | ↑/↓:nav | Ctrl+←/→/↑/↓:jump | ,/.:tab | [/]:detail | 1-3:mode | a:add | d:del | q:quit"
 }

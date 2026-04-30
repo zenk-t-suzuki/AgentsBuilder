@@ -1,6 +1,9 @@
 package tui
 
-import "agentsbuilder/internal/model"
+import (
+	"agentsbuilder/internal/marketplace"
+	"agentsbuilder/internal/model"
+)
 
 // ScopeSelectedMsg is sent when the user selects a scope in the sidebar.
 type ScopeSelectedMsg struct {
@@ -13,7 +16,6 @@ type AssetSelectedMsg struct {
 	Asset *model.Asset     // nil to clear selection
 	Item  *model.AssetItem // nil when selecting at the asset/directory level
 }
-
 
 // ProjectAddedMsg is sent when a new project is registered.
 type ProjectAddedMsg struct {
@@ -49,45 +51,59 @@ type TemplateAppliedMsg struct {
 // RefreshMsg triggers a full re-scan and UI refresh.
 type RefreshMsg struct{}
 
-// EnterTemplateMode switches the main area to template creation UI.
-type EnterTemplateModeMsg struct{}
-
-// ExitTemplateMode returns from template creation to normal browsing.
+// ExitTemplateModeMsg returns the Template tab to the Browse tab.
 type ExitTemplateModeMsg struct{}
 
-// RegistryAddedMsg is sent when a new registry is registered.
-type RegistryAddedMsg struct {
+// ---------------------------------------------------------------------------
+// Marketplace messages
+// ---------------------------------------------------------------------------
+
+// MarketplaceAddedMsg is sent when the user submits a new source. The handler
+// must parse the source, sync it, read the manifest, and persist the resulting
+// MarketplaceInfo.
+type MarketplaceAddedMsg struct {
+	Source string
+}
+
+// MarketplaceRemovedMsg requests removal of a marketplace by name (and cache).
+type MarketplaceRemovedMsg struct {
 	Name string
-	URL  string
 }
 
-// RegistryRemovedMsg is sent when a registry is removed.
-type RegistryRemovedMsg struct {
+// MarketplaceSyncMsg requests a sync. Empty Name means sync all.
+type MarketplaceSyncMsg struct {
 	Name string
 }
 
-// RegistrySyncMsg triggers a sync (git pull) for a registry or all registries.
-type RegistrySyncMsg struct {
-	Name string // empty = sync all
-}
-
-// RegistrySyncDoneMsg is sent after sync completes.
-type RegistrySyncDoneMsg struct {
+// MarketplaceSyncDoneMsg is sent after a sync completes.
+type MarketplaceSyncDoneMsg struct {
 	Errors map[string]error
 }
 
-// RegistrySyncStartMsg notifies the UI that sync has started.
-type RegistrySyncStartMsg struct{}
-
-// RegistryPublishMsg triggers publishing a local template to a registry.
-type RegistryPublishMsg struct {
-	RegistryName string
-	TemplateName string
-	TemplateDir  string
+// MarketplaceOpenMsg requests loading the plugin list for a marketplace and
+// switching the UI to the plugin browse mode.
+type MarketplaceOpenMsg struct {
+	Name string
 }
 
-// RegistryPublishDoneMsg is sent after publish completes.
-type RegistryPublishDoneMsg struct {
-	TemplateName string
-	Err          error
+// MarketplaceLoadDoneMsg delivers the loaded plugin list for the named
+// marketplace, or an error.
+type MarketplaceLoadDoneMsg struct {
+	Name    string
+	Plugins []marketplace.Plugin
+	Err     error
+}
+
+// MarketplaceInstallMsg requests installation of a plugin into the chosen
+// targets. The handler resolves base paths and invokes marketplace.InstallPlugin.
+type MarketplaceInstallMsg struct {
+	Plugin  marketplace.Plugin
+	Targets []installTargetOption
+}
+
+// MarketplaceInstallDoneMsg reports the install outcome.
+type MarketplaceInstallDoneMsg struct {
+	PluginName string
+	Summaries  []marketplace.InstallSummary
+	Err        error
 }

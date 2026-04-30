@@ -12,10 +12,10 @@ import (
 
 // AppConfig holds the persisted application configuration.
 type AppConfig struct {
-	Projects       []model.ProjectInfo  `json:"projects"`
-	ActiveProject  string               `json:"active_project"`
-	ActiveProvider model.Provider       `json:"active_provider"`
-	Registries     []model.RegistryInfo `json:"registries,omitempty"`
+	Projects       []model.ProjectInfo     `json:"projects"`
+	ActiveProject  string                  `json:"active_project"`
+	ActiveProvider model.Provider          `json:"active_provider"`
+	Marketplaces   []model.MarketplaceInfo `json:"marketplaces,omitempty"`
 }
 
 // configDir returns the path to the application config directory (~/.agentsbuilder/).
@@ -27,24 +27,14 @@ func configDir() (string, error) {
 	return filepath.Join(home, ".agentsbuilder"), nil
 }
 
-// TemplatesDir returns the path to the user templates directory (~/.agentsbuilder/templates/).
-// Add a subdirectory with a template.json file to create a custom template.
-func TemplatesDir() (string, error) {
+// MarketplaceCacheDir returns the path to the marketplace cache directory
+// (~/.agentsbuilder/cache/marketplaces/).
+func MarketplaceCacheDir() (string, error) {
 	dir, err := configDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "templates"), nil
-}
-
-// RegistryCacheDir returns the path to the registry cache directory
-// (~/.agentsbuilder/cache/registries/).
-func RegistryCacheDir() (string, error) {
-	dir, err := configDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "cache", "registries"), nil
+	return filepath.Join(dir, "cache", "marketplaces"), nil
 }
 
 // ConfigPath returns the full path to the config file (~/.agentsbuilder/config.json).
@@ -187,43 +177,45 @@ func (c *AppConfig) GetActiveProject() *model.ProjectInfo {
 	return nil
 }
 
-// AddRegistry registers a new Git repository as a template registry.
-func (c *AppConfig) AddRegistry(name, url string) error {
+// AddMarketplace registers a new plugin marketplace. The name must be unique
+// and matches the marketplace.json `name` field — callers should determine it
+// from a Sync call before persisting.
+func (c *AppConfig) AddMarketplace(name, source string) error {
 	if name == "" {
-		return errors.New("registry name cannot be empty")
+		return errors.New("marketplace name cannot be empty")
 	}
-	if url == "" {
-		return errors.New("registry URL cannot be empty")
+	if source == "" {
+		return errors.New("marketplace source cannot be empty")
 	}
-	for _, r := range c.Registries {
-		if r.Name == name {
-			return fmt.Errorf("registry %q already exists", name)
+	for _, m := range c.Marketplaces {
+		if m.Name == name {
+			return fmt.Errorf("marketplace %q already exists", name)
 		}
 	}
-	c.Registries = append(c.Registries, model.RegistryInfo{Name: name, URL: url})
+	c.Marketplaces = append(c.Marketplaces, model.MarketplaceInfo{Name: name, Source: source})
 	return c.Save()
 }
 
-// RemoveRegistry unregisters a registry by name.
-func (c *AppConfig) RemoveRegistry(name string) error {
+// RemoveMarketplace unregisters a marketplace by name.
+func (c *AppConfig) RemoveMarketplace(name string) error {
 	idx := -1
-	for i, r := range c.Registries {
-		if r.Name == name {
+	for i, m := range c.Marketplaces {
+		if m.Name == name {
 			idx = i
 			break
 		}
 	}
 	if idx < 0 {
-		return fmt.Errorf("registry %q not found", name)
+		return fmt.Errorf("marketplace %q not found", name)
 	}
-	c.Registries = append(c.Registries[:idx], c.Registries[idx+1:]...)
+	c.Marketplaces = append(c.Marketplaces[:idx], c.Marketplaces[idx+1:]...)
 	return c.Save()
 }
 
-// ListRegistries returns all registered registries.
-func (c *AppConfig) ListRegistries() []model.RegistryInfo {
-	result := make([]model.RegistryInfo, len(c.Registries))
-	copy(result, c.Registries)
+// ListMarketplaces returns all registered marketplaces.
+func (c *AppConfig) ListMarketplaces() []model.MarketplaceInfo {
+	result := make([]model.MarketplaceInfo, len(c.Marketplaces))
+	copy(result, c.Marketplaces)
 	return result
 }
 

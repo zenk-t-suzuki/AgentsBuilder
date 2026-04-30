@@ -4,16 +4,13 @@ import (
 	"fmt"
 	"strings"
 
-	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
-	"agentsbuilder/internal/registry"
-	tmplpkg "agentsbuilder/internal/template"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TemplateStep tracks the current step in template creation.
+// TemplateStep tracks the current step in template application.
 type TemplateStep int
 
 const (
@@ -22,45 +19,32 @@ const (
 	StepConfirm
 )
 
-// TemplateUIModel manages the template creation flow.
+// TemplateUIModel manages the template selection and apply flow. Templates
+// are predefined directory scaffolds — the user-defined template flow has been
+// replaced by the marketplace plugin system.
 type TemplateUIModel struct {
-	Step          TemplateStep
-	Templates     []model.Template
-	Cursor        int
-	Width         int
-	Height        int
-	TemplatesPath string // path to ~/.agentsbuilder/templates/ for display
+	Step      TemplateStep
+	Templates []model.Template
+	Cursor    int
+	Width     int
+	Height    int
 
 	// Configuration step
 	SelectedTemplate *model.Template
 	AssetChecks      []bool
 	ProviderChecks   []bool
-	ConfigCursor     int // index in the combined list
+	ConfigCursor     int
 
 	keys KeyMap
 }
 
-// NewTemplateUIModel creates a new template UI model.
-// It loads built-in predefined templates first, then appends any user-defined
-// templates discovered in ~/.agentsbuilder/templates/, and finally appends
-// templates from registered Git registries.
-func NewTemplateUIModel(registries []model.RegistryInfo) TemplateUIModel {
-	predefined := model.PredefinedTemplates()
-	user := tmplpkg.LoadUserTemplates()
-	remote := registry.LoadAllTemplates(registries)
-
-	templates := make([]model.Template, 0, len(predefined)+len(user)+len(remote))
-	templates = append(templates, predefined...)
-	templates = append(templates, user...)
-	templates = append(templates, remote...)
-
-	templatesPath, _ := config.TemplatesDir()
-
+// NewTemplateUIModel creates a new template UI model. Only built-in
+// predefined templates are listed.
+func NewTemplateUIModel() TemplateUIModel {
 	return TemplateUIModel{
-		Step:          StepSelectTemplate,
-		Templates:     templates,
-		TemplatesPath: templatesPath,
-		keys:          DefaultKeyMap(),
+		Step:      StepSelectTemplate,
+		Templates: model.PredefinedTemplates(),
+		keys:      DefaultKeyMap(),
 	}
 }
 
@@ -212,20 +196,10 @@ func (m TemplateUIModel) View() string {
 		b.WriteString(TitleStyle.Render("Select Template"))
 		b.WriteString("\n\n")
 		for i, t := range m.Templates {
-			marker := "  "
-			if t.RegistryName != "" {
-				marker = "◆ "
-			} else if t.UserDefined {
-				marker = "★ "
-			}
-			label := t.Name
-			if t.RegistryName != "" {
-				label = fmt.Sprintf("%s (%s)", t.Name, t.RegistryName)
-			}
 			if i == m.Cursor {
-				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s%s", marker, label)))
+				b.WriteString(SelectedStyle.Render(fmt.Sprintf("> %s", t.Name)))
 			} else {
-				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s%s", marker, label)))
+				b.WriteString(NormalStyle.Render(fmt.Sprintf("  %s", t.Name)))
 			}
 			b.WriteString("\n")
 			if t.Description != "" {
@@ -235,12 +209,8 @@ func (m TemplateUIModel) View() string {
 		}
 		b.WriteString("\n")
 		b.WriteString(DimStyle.Render("  enter:select | esc:cancel"))
-		if m.TemplatesPath != "" {
-			b.WriteString("\n\n")
-			b.WriteString(DimStyle.Render(fmt.Sprintf("  ★ user templates: %s", m.TemplatesPath)))
-			b.WriteString("\n")
-			b.WriteString(DimStyle.Render("  ◆ registry templates: [3] Registry タブで管理"))
-		}
+		b.WriteString("\n\n")
+		b.WriteString(DimStyle.Render("  Plugin パッケージのインストールは [3] Marketplace タブから"))
 
 	case StepConfigure:
 		b.WriteString(TitleStyle.Render("Configure Template"))
