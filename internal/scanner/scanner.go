@@ -4,112 +4,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"agentsbuilder/internal/assetdef"
 	"agentsbuilder/internal/model"
 )
-
-// assetLocation maps asset types to their relative paths for each provider.
-// RelPaths lists one or more candidate paths in priority order; items are
-// merged from every path that exists so that legacy and new locations are
-// both surfaced in a single Asset entry.
-type assetLocation struct {
-	Type     model.AssetType
-	RelPaths []string // relative to scope root; all existing paths are merged
-	IsFile   bool     // true for single files (e.g. CLAUDE.md), false for directories
-}
-
-// claudeCodeGlobalAssets defines where Claude Code stores global assets
-// relative to the user's home directory.
-func claudeCodeGlobalAssets() []assetLocation {
-	// MCP: ~/.claude.json holds mcpServers (primary); ~/.claude/settings.json is legacy fallback.
-	// Plugins: ~/.claude/settings.json holds the enabledPlugins map.
-	// Skills: ~/.claude/skills/ is the current location; ~/.claude/commands/ is the
-	// legacy location — both are scanned and merged.
-	return []assetLocation{
-		{Type: model.Skills, RelPaths: []string{".claude/skills", ".claude/commands"}, IsFile: false},
-		{Type: model.Agents, RelPaths: []string{".claude/agents"}, IsFile: false},
-		{Type: model.MCP, RelPaths: []string{".claude.json", ".claude/settings.json"}, IsFile: true},
-		{Type: model.Plugins, RelPaths: []string{".claude/settings.json"}, IsFile: true},
-		{Type: model.Hooks, RelPaths: []string{".claude/settings.json"}, IsFile: true},
-		{Type: model.AgentsMD, RelPaths: []string{".claude/AGENTS.md"}, IsFile: true},
-		{Type: model.ClaudeMD, RelPaths: []string{".claude/CLAUDE.md"}, IsFile: true},
-	}
-}
-
-// claudeCodeProjectAssets defines where Claude Code stores project-level assets
-// relative to the project root.
-func claudeCodeProjectAssets() []assetLocation {
-	// MCP: .mcp.json is the standard project-level file; .claude/settings.json is a fallback.
-	// Plugins are user-level (global only) — not included here.
-	return []assetLocation{
-		{Type: model.Skills, RelPaths: []string{".claude/skills", ".claude/commands"}, IsFile: false},
-		{Type: model.Agents, RelPaths: []string{".claude/agents"}, IsFile: false},
-		{Type: model.MCP, RelPaths: []string{".mcp.json", ".claude/settings.json"}, IsFile: true},
-		{Type: model.Hooks, RelPaths: []string{".claude/settings.json"}, IsFile: true},
-		{Type: model.AgentsMD, RelPaths: []string{"AGENTS.md"}, IsFile: true},
-		{Type: model.ClaudeMD, RelPaths: []string{"CLAUDE.md"}, IsFile: true},
-	}
-}
-
-// codexGlobalAssets defines where Codex stores global assets
-// relative to the user's home directory.
-//
-// Codex path notes:
-//   - Skills: ~/.codex/skills/ and ~/.agents/skills/ are both scanned and merged.
-//   - MCP is configured in ~/.codex/config.toml under [mcp_servers.*] sections.
-//   - Plugins are cached in ~/.codex/.tmp/plugins/plugins/; each subdir is a plugin.
-//   - AGENTS.md is read from ~/.codex/AGENTS.md for global instructions.
-//   - CLAUDE.md has no Codex equivalent and is intentionally omitted.
-func codexGlobalAssets() []assetLocation {
-	return []assetLocation{
-		{Type: model.Skills, RelPaths: []string{".codex/skills", ".agents/skills"}, IsFile: false},
-		{Type: model.Agents, RelPaths: []string{".codex/agents"}, IsFile: false},
-		{Type: model.MCP, RelPaths: []string{".codex/config.toml"}, IsFile: true},
-		{Type: model.Plugins, RelPaths: []string{".codex/.tmp/plugins/plugins"}, IsFile: false},
-		{Type: model.AgentsMD, RelPaths: []string{".codex/AGENTS.md"}, IsFile: true},
-	}
-}
-
-// codexProjectAssets defines where Codex stores project-level assets
-// relative to the project root.
-//
-// Codex path notes:
-//   - Skills: .codex/skills/ and .agents/skills/ are both scanned and merged.
-//   - MCP/config overrides go in .codex/config.toml (trusted projects only).
-//   - Plugins are user-level (global only) — not included here.
-//   - AGENTS.md is read from the repo root (Codex walks up from CWD).
-//   - CLAUDE.md has no Codex equivalent and is intentionally omitted.
-func codexProjectAssets() []assetLocation {
-	return []assetLocation{
-		{Type: model.Skills, RelPaths: []string{".codex/skills", ".agents/skills"}, IsFile: false},
-		{Type: model.Agents, RelPaths: []string{".codex/agents"}, IsFile: false},
-		{Type: model.MCP, RelPaths: []string{".codex/config.toml"}, IsFile: true},
-		{Type: model.AgentsMD, RelPaths: []string{"AGENTS.md"}, IsFile: true},
-	}
-}
-
-// globalAssetsFor returns the asset location definitions for a provider at global scope.
-func globalAssetsFor(provider model.Provider) []assetLocation {
-	switch provider {
-	case model.ClaudeCode:
-		return claudeCodeGlobalAssets()
-	case model.Codex:
-		return codexGlobalAssets()
-	default:
-		return nil
-	}
-}
-
-// projectAssetsFor returns the asset location definitions for a provider at project scope.
-func projectAssetsFor(provider model.Provider) []assetLocation {
-	switch provider {
-	case model.ClaudeCode:
-		return claudeCodeProjectAssets()
-	case model.Codex:
-		return codexProjectAssets()
-	default:
-		return nil
-	}
-}
 
 // ScanGlobal scans the global configuration locations for a given provider
 // and returns all assets with their existence and path metadata.
@@ -118,33 +15,33 @@ func ScanGlobal(provider model.Provider) []model.Asset {
 	if err != nil {
 		return nil
 	}
-	return scanAssets(provider, model.Global, home, globalAssetsFor(provider))
+	return scanAssets(home, assetdef.ForProviderScope(provider, model.Global))
 }
 
 // ScanProject scans a project directory for provider-specific assets.
 func ScanProject(provider model.Provider, projectPath string) []model.Asset {
-	return scanAssets(provider, model.Project, projectPath, projectAssetsFor(provider))
+	return scanAssets(projectPath, assetdef.ForProviderScope(provider, model.Project))
 }
 
-// scanAssets checks each known asset location under basePath and returns
+// scanAssets checks each known asset definition under basePath and returns
 // populated Asset structs, including individual Items for directory/config assets.
 //
-// For locations with multiple RelPaths, items are merged from every path that
+// For definitions with multiple ScanPaths, items are merged from every path that
 // exists. The primary display path (Asset.FilePath) is set to the first path
 // that exists, falling back to the first listed path when none exist.
-func scanAssets(provider model.Provider, scope model.Scope, basePath string, locs []assetLocation) []model.Asset {
-	assets := make([]model.Asset, 0, len(locs))
-	for _, loc := range locs {
+func scanAssets(basePath string, defs []assetdef.AssetDef) []model.Asset {
+	assets := make([]model.Asset, 0, len(defs))
+	for _, def := range defs {
 		var primaryPath string
 		var exists bool
 		var mergedItems []model.AssetItem
 
-		for i, relPath := range loc.RelPaths {
+		for i, relPath := range def.ScanPaths {
 			fullPath := filepath.Join(basePath, relPath)
 			if i == 0 {
 				primaryPath = fullPath // default display path
 			}
-			if !pathExists(fullPath, loc.IsFile) {
+			if !pathExists(fullPath, def.IsFile()) {
 				continue
 			}
 			if !exists {
@@ -153,21 +50,21 @@ func scanAssets(provider model.Provider, scope model.Scope, basePath string, loc
 			}
 			// Scan items from this path and merge them in.
 			tmp := model.Asset{
-				Type:     loc.Type,
-				Provider: provider,
-				Scope:    scope,
+				Type:     def.Type,
+				Provider: def.Provider,
+				Scope:    def.Scope,
 				FilePath: fullPath,
 				Exists:   true,
 				Active:   true,
 			}
-			scanItems(&tmp)
+			scanItems(&tmp, &def)
 			mergedItems = append(mergedItems, tmp.Items...)
 		}
 
 		assets = append(assets, model.Asset{
-			Type:     loc.Type,
-			Provider: provider,
-			Scope:    scope,
+			Type:     def.Type,
+			Provider: def.Provider,
+			Scope:    def.Scope,
 			FilePath: primaryPath,
 			Exists:   exists,
 			Active:   exists,

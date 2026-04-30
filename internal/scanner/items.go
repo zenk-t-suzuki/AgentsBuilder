@@ -6,35 +6,111 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agentsbuilder/internal/assetdef"
 	"agentsbuilder/internal/model"
 )
 
-// scanItems populates the Items field of an asset based on its type.
-// Called after the asset's Exists field is determined.
-func scanItems(asset *model.Asset) {
+// scanItems populates the Items field of an asset based on its definition.
+func scanItems(asset *model.Asset, def *assetdef.AssetDef) {
 	if !asset.Exists {
 		return
 	}
-	switch asset.Type {
-	case model.Agents:
-		asset.Items = scanAgentItems(asset.FilePath, asset.Provider)
-	case model.Skills:
-		asset.Items = scanSkillItems(asset.FilePath)
-	case model.MCP:
-		switch asset.Provider {
-		case model.ClaudeCode:
-			asset.Items = scanMCPItemsClaude(asset.FilePath)
-		case model.Codex:
-			asset.Items = scanMCPItemsCodex(asset.FilePath)
+	switch def.Storage {
+	case assetdef.DirListing:
+		switch asset.Type {
+		case model.Agents:
+			asset.Items = scanAgentItems(asset.FilePath, asset.Provider)
+		case model.Skills:
+			asset.Items = scanSkillItems(asset.FilePath)
+		case model.Plugins:
+			if asset.Provider == model.Codex {
+				asset.Items = scanPluginItemsCodex(asset.FilePath)
+			}
 		}
-	case model.Plugins:
-		switch asset.Provider {
-		case model.ClaudeCode:
-			asset.Items = scanPluginItemsClaudeCode(asset.FilePath)
-		case model.Codex:
-			asset.Items = scanPluginItemsCodex(asset.FilePath)
+	case assetdef.EmbeddedJSON:
+		if def.Key != nil {
+			asset.Items = scanEmbeddedJSON(asset.FilePath, def.Key.JSONKey)
+		}
+	case assetdef.EmbeddedTOML:
+		if def.Key != nil {
+			asset.Items = scanEmbeddedTOML(asset.FilePath, def.Key.TOMLPrefix)
+		}
+	// SingleFile: no sub-items to scan
+	}
+}
+
+// scanEmbeddedJSON extracts item names from a top-level JSON object key.
+// Works for mcpServers, enabledPlugins, hooks, etc.
+func scanEmbeddedJSON(filePath, jsonKey string) []model.AssetItem {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	section, ok := raw[jsonKey]
+	if !ok {
+		return nil
+	}
+
+	// Try as map[string]* — the value type varies but keys are item names.
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(section, &entries); err != nil {
+		return nil
+	}
+
+	var items []model.AssetItem
+	for name, val := range entries {
+		// For enabledPlugins, skip disabled entries (value == false).
+		if jsonKey == "enabledPlugins" {
+			var enabled bool
+			if json.Unmarshal(val, &enabled) == nil && !enabled {
+				continue
+			}
+		}
+		displayName := name
+		// For enabledPlugins, strip the @marketplace suffix.
+		if jsonKey == "enabledPlugins" {
+			if at := strings.LastIndex(name, "@"); at >= 0 {
+				displayName = name[:at]
+			}
+		}
+		items = append(items, model.AssetItem{
+			Name:     displayName,
+			FilePath: filePath,
+		})
+	}
+	return items
+}
+
+// scanEmbeddedTOML extracts item names from TOML section headers matching
+// [prefix.<name>]. For example, prefix "mcp_servers" matches [mcp_servers.foo].
+func scanEmbeddedTOML(filePath, prefix string) []model.AssetItem {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+
+	headerPrefix := "[" + prefix + "."
+	var items []model.AssetItem
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, headerPrefix) && strings.HasSuffix(line, "]") {
+			name := strings.TrimPrefix(line, headerPrefix)
+			name = strings.TrimSuffix(name, "]")
+			if name != "" && !seen[name] {
+				seen[name] = true
+				items = append(items, model.AssetItem{
+					Name:     name,
+					FilePath: filePath,
+				})
+			}
 		}
 	}
+	return items
 }
 
 // scanAgentItems reads agent definitions from a directory.
@@ -136,90 +212,6 @@ func scanSkillItems(dir string) []model.AssetItem {
 			Name:        itemName,
 			Description: desc,
 			FilePath:    fullPath,
-		})
-	}
-	return items
-}
-
-// scanMCPItemsClaude extracts MCP server names from Claude Code's settings.json.
-func scanMCPItemsClaude(settingsPath string) []model.AssetItem {
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return nil
-	}
-
-	var settings struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return nil
-	}
-
-	var items []model.AssetItem
-	for name := range settings.MCPServers {
-		items = append(items, model.AssetItem{
-			Name:     name,
-			FilePath: settingsPath,
-		})
-	}
-	return items
-}
-
-// scanMCPItemsCodex extracts MCP server names from Codex's config.toml.
-// Looks for section headers of the form [mcp_servers.<name>].
-func scanMCPItemsCodex(configPath string) []model.AssetItem {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-
-	var items []model.AssetItem
-	seen := make(map[string]bool)
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "[mcp_servers.") && strings.HasSuffix(line, "]") {
-			serverName := strings.TrimPrefix(line, "[mcp_servers.")
-			serverName = strings.TrimSuffix(serverName, "]")
-			if serverName != "" && !seen[serverName] {
-				seen[serverName] = true
-				items = append(items, model.AssetItem{
-					Name:     serverName,
-					FilePath: configPath,
-				})
-			}
-		}
-	}
-	return items
-}
-
-// scanPluginItemsClaudeCode extracts enabled plugin names from Claude Code's settings.json.
-// enabledPlugins is a map of "pluginName@marketplace" → bool.
-func scanPluginItemsClaudeCode(settingsPath string) []model.AssetItem {
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return nil
-	}
-
-	var settings struct {
-		EnabledPlugins map[string]bool `json:"enabledPlugins"`
-	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		return nil
-	}
-
-	var items []model.AssetItem
-	for key, enabled := range settings.EnabledPlugins {
-		if !enabled {
-			continue
-		}
-		// Key format: "pluginName@marketplace" — use only the plugin name portion.
-		name := key
-		if at := strings.LastIndex(key, "@"); at >= 0 {
-			name = key[:at]
-		}
-		items = append(items, model.AssetItem{
-			Name:     name,
-			FilePath: settingsPath,
 		})
 	}
 	return items

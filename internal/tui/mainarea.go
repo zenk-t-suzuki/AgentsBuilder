@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"agentsbuilder/internal/assetdef"
 	"agentsbuilder/internal/model"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -96,9 +97,13 @@ type selectableItem struct {
 }
 
 // isVisible returns true if an asset should appear in the list.
-// Assets that are missing AND have no items are hidden — showing a missing
-// directory path provides no useful information to the user.
+// Embedded assets (MCP, Plugins in JSON, etc.) are only shown when they have
+// actual items — an empty settings.json with no MCP servers is not meaningful.
+// Directory and single-file assets are shown whenever they exist on disk.
 func isVisible(a model.Asset) bool {
+	if def, ok := assetdef.Lookup(a.Provider, a.Scope, a.Type); ok && def.IsEmbedded() {
+		return len(a.Items) > 0
+	}
 	return a.Exists || len(a.Items) > 0
 }
 
@@ -392,7 +397,7 @@ func (m MainAreaModel) buildLines() []assetLine {
 
 					var rendered string
 					if m.TemplateCreating {
-						checked := m.TemplateSelPaths[item.FilePath]
+						checked := m.TemplateSelPaths[TmplSelectKey(asset.Type, asset.Provider, item.FilePath, item.Name)]
 						checkPlain := "[ ]"
 						checkStyled := UncheckedStyle
 						if checked {

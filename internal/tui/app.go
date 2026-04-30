@@ -693,14 +693,15 @@ func (m AppModel) tmplScopeLabel() string {
 	return "Global"
 }
 
-// tmplSelPaths builds a set of selected source paths for the MainArea renderer.
+// tmplSelPaths builds a set of selected keys for the MainArea renderer.
+// For embedded items the key includes the item name; for regular items it's the source path.
 func (m AppModel) tmplSelPaths() map[string]bool {
 	if len(m.TmplSelItems) == 0 {
 		return nil
 	}
 	out := make(map[string]bool, len(m.TmplSelItems))
 	for _, item := range m.TmplSelItems {
-		out[item.SrcPath] = true
+		out[item.SelectKey()] = true
 	}
 	return out
 }
@@ -718,7 +719,7 @@ func (m *AppModel) toggleTmplItem() {
 		return
 	}
 	for i, existing := range m.TmplSelItems {
-		if existing.SrcPath == ti.SrcPath {
+		if existing.SelectKey() == ti.SelectKey() {
 			// Already selected → deselect
 			m.TmplSelItems = append(m.TmplSelItems[:i], m.TmplSelItems[i+1:]...)
 			m.MainArea.TemplateSelPaths = m.tmplSelPaths()
@@ -786,6 +787,8 @@ func (m AppModel) updateTmplName(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Filename:   it.Filename,
 				AssetType:  it.AssetType,
 				Provider:   it.Provider,
+				ItemName:   it.ItemName,
+				Embedded:   it.Embedded,
 			})
 		}
 		if err := tmplpkg.SaveUserTemplate(name, refs); err != nil {

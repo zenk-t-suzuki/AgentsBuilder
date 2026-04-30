@@ -108,7 +108,7 @@ func TestApplyTemplate_GlobalScope(t *testing.T) {
 	}
 
 	expectDirs := []string{
-		filepath.Join(dir, ".codex", "commands"),
+		filepath.Join(dir, ".codex", "skills"),
 		filepath.Join(dir, ".codex"),
 	}
 	for _, d := range expectDirs {
@@ -141,7 +141,7 @@ func TestApplyTemplate_Universal(t *testing.T) {
 		filepath.Join(dir, ".claude", "commands"),
 		filepath.Join(dir, ".claude", "agents"),
 		filepath.Join(dir, ".claude"),
-		filepath.Join(dir, ".codex", "commands"),
+		filepath.Join(dir, ".codex", "skills"),
 		filepath.Join(dir, ".codex", "agents"),
 		filepath.Join(dir, ".codex"),
 	}

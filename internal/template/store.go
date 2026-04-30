@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"agentsbuilder/internal/assetdef"
 	"agentsbuilder/internal/config"
 	"agentsbuilder/internal/model"
 )
@@ -17,9 +18,16 @@ import (
 // The leading '*' causes it to sort first alphabetically in the directory listing.
 const DefaultTemplateDirName = "*default"
 
+// mergeInfo records how an embedded item should be merged into a target config file.
+type mergeInfo struct {
+	AssetType string `json:"assetType"` // e.g. "MCP", "Plugins"
+	Provider  string `json:"provider"`  // e.g. "ClaudeCode", "Codex"
+}
+
 // templateFileItem describes one file bundled inside a user-created template.
 type templateFileItem struct {
-	RelPath string `json:"relPath"` // path relative to the template's files/ directory
+	RelPath string     `json:"relPath"`         // path relative to the template's files/ directory
+	Merge   *mergeInfo `json:"merge,omitempty"` // non-nil for embedded items that require merge
 }
 
 // templateFile is the on-disk JSON representation of a user-defined template.
@@ -56,6 +64,8 @@ type FileRef struct {
 	Filename   string          // filename at destination
 	AssetType  model.AssetType
 	Provider   model.Provider
+	ItemName   string // for embedded items: the specific entry name (e.g. MCP server name)
+	Embedded   bool   // true when this item is embedded in a shared config file
 }
 
 // EnsureDefaultTemplate creates ~/.agentsbuilder/templates/*default/template.json
@@ -131,6 +141,8 @@ func LoadUserTemplates() []model.Template {
 // SaveUserTemplate creates a new user template from the given file refs.
 // It writes a template.json manifest and copies all referenced source files
 // into a files/ sub-directory within the template directory.
+// Embedded items (MCP servers, plugins) are extracted from shared config files
+// and saved as individual snippet files under files/__merge__/.
 func SaveUserTemplate(name string, refs []FileRef) error {
 	if name == "" {
 		return errors.New("template name cannot be empty")
@@ -170,7 +182,7 @@ func SaveUserTemplate(name string, refs []FileRef) error {
 		}
 	}
 
-	// Copy each file into the template's files/ directory.
+	// Copy/extract each item into the template's files/ directory.
 	var items []templateFileItem
 	for _, r := range refs {
 		var relPath string
@@ -180,13 +192,47 @@ func SaveUserTemplate(name string, refs []FileRef) error {
 			relPath = r.Filename
 		}
 		destPath := filepath.Join(tmplDir, "files", relPath)
-		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
-			return fmt.Errorf("creating files directory: %w", err)
+
+		if r.Embedded {
+			// Extract the specific entry from the shared config file.
+			if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+				return fmt.Errorf("creating merge directory: %w", err)
+			}
+			extracted, err := extractEmbeddedItem(r)
+			if err != nil {
+				return fmt.Errorf("extracting %s %q: %w", r.AssetType.String(), r.ItemName, err)
+			}
+			if err := os.WriteFile(destPath, extracted, 0o644); err != nil {
+				return fmt.Errorf("writing %s: %w", r.ItemName, err)
+			}
+			items = append(items, templateFileItem{
+				RelPath: relPath,
+				Merge: &mergeInfo{
+					AssetType: r.AssetType.String(),
+					Provider:  r.Provider.String(),
+				},
+			})
+		} else {
+			// Regular file or directory copy.
+			info, err := os.Stat(r.SrcPath)
+			if err != nil {
+				return fmt.Errorf("stat %s: %w", r.Filename, err)
+			}
+
+			if info.IsDir() {
+				if err := copyDir(r.SrcPath, destPath); err != nil {
+					return fmt.Errorf("copying %s: %w", r.Filename, err)
+				}
+			} else {
+				if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+					return fmt.Errorf("creating files directory: %w", err)
+				}
+				if err := copyFile(r.SrcPath, destPath); err != nil {
+					return fmt.Errorf("copying %s: %w", r.Filename, err)
+				}
+			}
+			items = append(items, templateFileItem{RelPath: relPath})
 		}
-		if err := copyFile(r.SrcPath, destPath); err != nil {
-			return fmt.Errorf("copying %s: %w", r.Filename, err)
-		}
-		items = append(items, templateFileItem{RelPath: relPath})
 	}
 
 	f := templateFile{
@@ -203,30 +249,125 @@ func SaveUserTemplate(name string, refs []FileRef) error {
 	return os.WriteFile(filepath.Join(tmplDir, "template.json"), data, 0o644)
 }
 
+// extractEmbeddedItem extracts a single item's configuration from a shared
+// config file. The extraction method is determined by the AssetDef's
+// StorageKind and ConfigKey.
+func extractEmbeddedItem(r FileRef) ([]byte, error) {
+	// Look up the asset definition to get the config key.
+	def, ok := assetdef.LookupAny(r.Provider, r.AssetType)
+	if !ok || def.Key == nil {
+		return nil, fmt.Errorf("unsupported embedded asset type: %s", r.AssetType.String())
+	}
+
+	switch def.Storage {
+	case assetdef.EmbeddedJSON:
+		return extractJSONEntry(r.SrcPath, def.Key.JSONKey, r.ItemName)
+	case assetdef.EmbeddedTOML:
+		return extractTOMLSection(r.SrcPath, def.Key.TOMLPrefix, r.ItemName)
+	default:
+		return nil, fmt.Errorf("unsupported storage kind for extraction")
+	}
+}
+
+// extractJSONEntry extracts a single entry from a top-level JSON object key.
+// Returns a JSON snippet like {"mcpServers": {"name": {...}}}.
+func extractJSONEntry(filePath, jsonKey, itemName string) ([]byte, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	section, ok := raw[jsonKey]
+	if !ok {
+		return nil, fmt.Errorf("%q section not found in %s", jsonKey, filePath)
+	}
+	var entries map[string]json.RawMessage
+	if err := json.Unmarshal(section, &entries); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", jsonKey, err)
+	}
+
+	// For enabledPlugins, the key may include an @marketplace suffix.
+	// Try exact match first, then match by name prefix.
+	entryKey := itemName
+	if _, ok := entries[entryKey]; !ok {
+		for key := range entries {
+			name := key
+			if at := strings.LastIndex(key, "@"); at >= 0 {
+				name = key[:at]
+			}
+			if name == itemName {
+				entryKey = key
+				break
+			}
+		}
+	}
+
+	entry, ok := entries[entryKey]
+	if !ok {
+		return nil, fmt.Errorf("%q not found in %s.%s", itemName, filePath, jsonKey)
+	}
+	result := map[string]map[string]json.RawMessage{
+		jsonKey: {entryKey: entry},
+	}
+	return json.MarshalIndent(result, "", "  ")
+}
+
+// extractTOMLSection extracts a single [prefix.<name>] section from a TOML file.
+func extractTOMLSection(filePath, prefix, itemName string) ([]byte, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	header := fmt.Sprintf("[%s.%s]", prefix, itemName)
+
+	var result []string
+	capturing := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == header {
+			capturing = true
+			result = append(result, line)
+			continue
+		}
+		if capturing {
+			if strings.HasPrefix(trimmed, "[") {
+				break
+			}
+			result = append(result, line)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("%q not found in %s", header, filePath)
+	}
+	return []byte(strings.Join(result, "\n") + "\n"), nil
+}
+
+// loadManifestItems reads the items array from a template's template.json manifest.
+func loadManifestItems(templateDir string) []templateFileItem {
+	data, err := os.ReadFile(filepath.Join(templateDir, "template.json"))
+	if err != nil {
+		return nil
+	}
+	var f templateFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil
+	}
+	return f.Items
+}
+
 // fileToTemplate converts the on-disk templateFile to a model.Template.
 func fileToTemplate(f templateFile) (model.Template, error) {
 	if f.Name == "" {
 		return model.Template{}, errors.New("name is empty")
 	}
 
-	assetNames := map[string]model.AssetType{
-		"Skills":       model.Skills,
-		"Agents":       model.Agents,
-		"CustomAgents": model.Agents,
-		"MCP":          model.MCP,
-		"Plugins":      model.Plugins,
-		"Hooks":        model.Hooks,
-		"AgentsMD":     model.AgentsMD,
-		"ClaudeMD":     model.ClaudeMD,
-	}
-	providerNames := map[string]model.Provider{
-		"ClaudeCode": model.ClaudeCode,
-		"Codex":      model.Codex,
-	}
-
 	var assets []model.AssetType
 	for _, a := range f.Assets {
-		at, ok := assetNames[a]
+		at, ok := model.ParseAssetType(a)
 		if !ok {
 			return model.Template{}, fmt.Errorf("unknown asset %q", a)
 		}
@@ -235,7 +376,7 @@ func fileToTemplate(f templateFile) (model.Template, error) {
 
 	var providers []model.Provider
 	for _, p := range f.Providers {
-		pv, ok := providerNames[p]
+		pv, ok := model.ParseProvider(p)
 		if !ok {
 			return model.Template{}, fmt.Errorf("unknown provider %q", p)
 		}
@@ -261,6 +402,24 @@ func fileToTemplate(f templateFile) (model.Template, error) {
 		Assets:      assets,
 		Providers:   providers,
 	}, nil
+}
+
+// copyDir recursively copies a directory tree from src to dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFile(path, target)
+	})
 }
 
 // copyFile copies src to dst, creating dst if necessary.

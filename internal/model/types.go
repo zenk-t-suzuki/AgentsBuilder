@@ -82,6 +82,40 @@ func AssetTypes() []AssetType {
 	return []AssetType{Skills, Agents, MCP, Plugins, Hooks, AgentsMD, ClaudeMD}
 }
 
+// ParseAssetType converts a string to an AssetType.
+// Accepted values include both display names ("Custom Agents") and config
+// names ("Agents", "CustomAgents").
+func ParseAssetType(s string) (AssetType, bool) {
+	at, ok := assetTypeNames[s]
+	return at, ok
+}
+
+var assetTypeNames = map[string]AssetType{
+	"Skills":        Skills,
+	"Agents":        Agents,
+	"CustomAgents":  Agents,
+	"Custom Agents": Agents,
+	"MCP":           MCP,
+	"Plugins":       Plugins,
+	"Hooks":         Hooks,
+	"AgentsMD":      AgentsMD,
+	"AGENTS.md":     AgentsMD,
+	"ClaudeMD":      ClaudeMD,
+	"CLAUDE.md":     ClaudeMD,
+}
+
+// ParseProvider converts a string to a Provider.
+func ParseProvider(s string) (Provider, bool) {
+	pv, ok := providerNames[s]
+	return pv, ok
+}
+
+var providerNames = map[string]Provider{
+	"ClaudeCode":  ClaudeCode,
+	"Claude Code": ClaudeCode,
+	"Codex":       Codex,
+}
+
 // AssetItem represents an individual named entry within an asset directory or file.
 // For Agents/Skills, each item is a single file. For MCP, each item is a server entry.
 type AssetItem struct {

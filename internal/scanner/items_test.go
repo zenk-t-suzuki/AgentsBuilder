@@ -8,9 +8,9 @@ import (
 
 func TestParseFrontmatter(t *testing.T) {
 	cases := []struct {
-		input   string
-		name    string
-		desc    string
+		input string
+		name  string
+		desc  string
 	}{
 		{
 			input: "---\nname: my-agent\ndescription: Does stuff\n---\nBody",
@@ -62,12 +62,12 @@ func TestScanAgentItems_ClaudeCode(t *testing.T) {
 	}
 }
 
-func TestScanMCPItemsClaude(t *testing.T) {
+func TestScanEmbeddedJSON_MCP(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
 	os.WriteFile(settingsPath, []byte(`{"mcpServers":{"server-a":{},"server-b":{}}}`), 0o644)
 
-	items := scanMCPItemsClaude(settingsPath)
+	items := scanEmbeddedJSON(settingsPath, "mcpServers")
 	if len(items) != 2 {
 		t.Fatalf("expected 2 MCP items, got %d", len(items))
 	}
@@ -80,13 +80,27 @@ func TestScanMCPItemsClaude(t *testing.T) {
 	}
 }
 
-func TestScanMCPItemsCodex(t *testing.T) {
+func TestScanEmbeddedJSON_Plugins(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	os.WriteFile(settingsPath, []byte(`{"enabledPlugins":{"myplugin@marketplace":true,"disabled@mp":false}}`), 0o644)
+
+	items := scanEmbeddedJSON(settingsPath, "enabledPlugins")
+	if len(items) != 1 {
+		t.Fatalf("expected 1 enabled plugin, got %d", len(items))
+	}
+	if items[0].Name != "myplugin" {
+		t.Errorf("expected 'myplugin', got %q", items[0].Name)
+	}
+}
+
+func TestScanEmbeddedTOML(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 	content := "[mcp_servers.my-server]\ncommand = \"npx\"\n[mcp_servers.other-server]\ncommand = \"uvx\"\n"
 	os.WriteFile(configPath, []byte(content), 0o644)
 
-	items := scanMCPItemsCodex(configPath)
+	items := scanEmbeddedTOML(configPath, "mcp_servers")
 	if len(items) != 2 {
 		t.Fatalf("expected 2 Codex MCP items, got %d", len(items))
 	}
@@ -96,6 +110,17 @@ func TestScanMCPItemsCodex(t *testing.T) {
 	}
 	if !names["my-server"] || !names["other-server"] {
 		t.Errorf("expected my-server and other-server, got %v", names)
+	}
+}
+
+func TestScanEmbeddedJSON_MissingKey(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	os.WriteFile(settingsPath, []byte(`{"other":"value"}`), 0o644)
+
+	items := scanEmbeddedJSON(settingsPath, "mcpServers")
+	if len(items) != 0 {
+		t.Fatalf("expected 0 items for missing key, got %d", len(items))
 	}
 }
 
